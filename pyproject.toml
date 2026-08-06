@@ -1,0 +1,16 @@
+[project]
+name = "shield-in-alpasim"
+version = "0.0.1"
+description = "kitti-nav's hard safety shield, wrapped as an AlpaSim driver plugin"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23.0",
+    "alpasim_plugins",
+    "alpasim_driver",
+]
+
+[project.entry-points."alpasim.models"]
+shielded = "shield_in_alpasim.driver:ShieldedDriver"
+
+[tool.setuptools.packages.find]
+where = ["src"]

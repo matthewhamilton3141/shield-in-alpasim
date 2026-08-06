@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+.DS_Store
+
+# sibling checkouts this repo depends on but does not vendor
+/kitti-nav/
+/alpasim/
+
+# AlpaSim scene assets / rollout artifacts are large, never committed
+data/
+outputs/

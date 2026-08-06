@@ -1,0 +1,10 @@
+numpy>=1.23.0
+pytest>=7.4.0
+
+# kitti-nav is a sibling checkout (../kitti-nav), not a PyPI package — see conftest.py
+# and ATTRIBUTION.md.
+
+# AlpaSim is optional for local dev: driver.py degrades to its non-AlpaSim logic when
+# alpasim_driver/torch aren't importable (e.g. on a Mac dev box with no GPU stack), the
+# same pattern gsplat-rt/kitti-nav use for GPU-only pieces. Install per NVlabs/alpasim's
+# own instructions on the A10G box when running the harness for real.
