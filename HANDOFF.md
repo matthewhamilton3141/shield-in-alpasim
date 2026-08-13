@@ -5,6 +5,46 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶ PREPPED FOR NEXT BOX SESSION (2026-08-13, Mac, off-meter) — read this first
+
+Everything below was staged so the next box session is short. Off-meter findings + a turnkey
+recipe:
+
+**Off-meter confirmations (no box needed to know these):**
+- **Our emitted trajectory is correct.** Reproduced `_rollout` for the stalled cycles: from
+  `speed_in=2.13` it emits waypoints marching 1.3→15.4 m with implied speeds 2.6→7.6 m/s; even
+  from `v=0` it accelerates (0.25→9.0 m). So finding 1 (car doesn't move) is **not** our
+  trajectory generation — it's downstream (controller/handover/execution). Note this *weakens*
+  the "re-roll degrades VaVAM" idea: cycle 1 emitted a strong accelerating plan and the car
+  still ended at 0, so the controller seems to ignore even a good trajectory across that
+  transition. Keep both hypotheses open: (i) re-roll degrades near-term motion from rest;
+  (ii) a controller/GT-handover execution bug independent of our trajectory.
+- **Finding 2 mechanism is pinned.** `can_stop_safely` (kitti-nav `vehicle.py:244`) returns
+  False if `clearance(current_state) < safety_margin` for *any* disc, and `clearance` is
+  omnidirectional — so a rear actor within 0.30 m fails certification before the braking
+  rollout (which moves forward, away from it) even runs. **Candidate fix (our side, least
+  invasive):** in `obstacles.py`, drop discs strictly behind the ego's rear bumper plane and
+  outside the lateral corridor — obstacles a forward-only shield cannot collide with. Do
+  carefully (a car merging from behind-beside matters); gate it and A/B the intervention count.
+  Secondary to finding 1 — it only engages after the car has already stalled.
+
+**Turnkey next box session (parquet only, NO render — cheap):**
+```bash
+brev start shield-a100 && brev refresh
+S="ssh -F ~/.brev/ssh_config shield-a100"
+$S "export PATH=\$HOME/.local/bin:\$PATH; cd ~/alpasim; \
+    uv run python ~/shield-in-alpasim/scripts/analyze_rollout_parquet.py \
+    out_vdiag/rollouts/*/metrics.parquet"
+# out_vdiag persists on the stopped box's disk. The script prints the schema then a
+# commanded-vs-achieved trace. Decision: if achieved speed stays ~0 while commanded accel is
+# positive -> controller isn't executing our plan (downstream); then look at the controller /
+# the GT->shield handover. If achieved tracks a degraded plan -> the re-roll hypothesis.
+```
+Then, depending on the parquet: implement the confirmed fix (both candidates are pre-designed
+above) and re-render `shielded_vavam` to compare intervention counts.
+
+---
+
 ## ▶▶▶▶▶ Session update — INSTRUMENTED DIAGNOSIS (2026-08-13, box)
 
 Added `rollout_diagnostics()` (ahead-vs-behind, proposed-vs-shielded, per cycle; committed)
