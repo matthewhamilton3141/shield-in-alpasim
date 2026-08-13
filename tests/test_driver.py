@@ -43,6 +43,37 @@ def test_rollout_waypoints_land_on_the_output_period():
     assert np.allclose(np.diff(xy[:, 0]), 2.5)
 
 
+def test_forward_relevant_field_drops_only_whats_behind():
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    cfg = VehicleConfig()  # rear_overhang 0.97 + safety_margin 0.30 -> rear cut at -1.27 m
+    circles = np.array([
+        [15.0, 0.0, 1.0],   # dead ahead        -> keep
+        [-5.0, 0.0, 1.0],   # well behind        -> drop (forward extent -4 < -1.27)
+        [-1.0, 2.0, 1.0],   # beside-rear, reaches forward to 0 >= -1.27 -> keep (conservative)
+        [-3.0, 0.0, 0.5],   # behind, small      -> drop (forward extent -2.5)
+    ])
+    kept = forward_relevant_field(CircleField(circles), cfg).circles
+    xs = sorted(kept[:, 0].tolist())
+    assert xs == [-1.0, 15.0]  # the two behind discs are gone, the rest stay
+
+
+def test_forward_relevant_field_is_a_noop_when_nothing_is_behind():
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    f = CircleField(np.array([[10.0, 0.0, 1.0]]))
+    assert forward_relevant_field(f, VehicleConfig()) is f  # same object, no copy
+
+
+def test_rear_filter_flag_is_honored():
+    assert _driver(rear_filter=False)._rear_filter is False
+    assert _driver(rear_filter=True)._rear_filter is True
+
+
 def test_default_horizon_spans_the_mpc_window():
     # No explicit horizon_steps -> derive from the rate to span DEFAULT_HORIZON_S (3.0 s),
     # which must cover the controller's 2.0 s MPC horizon or the MPC brakes to a stop at our

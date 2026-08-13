@@ -73,6 +73,34 @@ DEFAULT_HORIZON_S = 3.0
 # the ego pose history has not arrived yet.
 EMPTY_FIELD = CircleField(None)
 
+# Drop obstacles the shield cannot hit by moving forward — set SHIELD_REAR_FILTER=0 to disable.
+REAR_FILTER_ENV_VAR = "SHIELD_REAR_FILTER"
+
+
+def forward_relevant_field(field, cfg):
+    """Drop obstacle discs that sit entirely behind the ego's rear bumper.
+
+    The shield never reverses (`min_speed=0`) and its braking rollout only moves *forward*, so a
+    disc behind the rear bumper only recedes — it can never be hit. But kitti-nav's `clearance`
+    is omnidirectional and `can_stop_safely` refuses to certify when the *current* clearance is
+    below `safety_margin`, so a car close behind freezes the ego in place. That is both useless
+    (braking cannot avoid a rear threat) and measurably costly (finding 2: it halved progress on
+    one sweep scene). This removes exactly those discs and nothing else.
+
+    Cut at the rear bumper (`x = -rear_overhang` in the rig frame, origin at the rear axle)
+    minus `safety_margin`, and use each disc's own forward-most extent (`x + r`) so a disc that
+    only *reaches* the rear corner is kept — conservative against the rear overhang's outward
+    swing on a turn. Discs beside or ahead of the ego are untouched: those are real.
+    """
+    circles = np.asarray(getattr(field, "circles", np.zeros((0, 3))), float).reshape(-1, 3)
+    if len(circles) == 0:
+        return field
+    rear_cut = -(cfg.rear_overhang + cfg.safety_margin)
+    keep = (circles[:, 0] + circles[:, 2]) >= rear_cut
+    if keep.all():
+        return field
+    return CircleField(circles[keep])
+
 
 def _coast(_state) -> tuple[float, float]:
     """The no-policy fallback: command zero accel and zero steer, and let the shield decide.
@@ -137,8 +165,16 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         obstacles=None,
         scene_source: SceneObstacleSource | None = None,
         inner_model=None,
+        rear_filter: bool | None = None,
     ):
         self._cfg = cfg
+        # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
+        # default; `SHIELD_REAR_FILTER=0` disables it for an A/B against the over-conservative
+        # behaviour. Explicit constructor arg wins (tests).
+        self._rear_filter = (
+            os.environ.get(REAR_FILTER_ENV_VAR, "1") != "0" if rear_filter is None
+            else rear_filter
+        )
         self._camera_ids = list(camera_ids)
         self._context_length = context_length
         self._output_frequency_hz = output_frequency_hz
@@ -239,7 +275,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             return self._obstacles
 
         ego_xy, ego_yaw, timestamp_us = ego
-        return self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
+        field = self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
+        if self._rear_filter:
+            field = forward_relevant_field(field, self._cfg)
+        return field
 
     def _rollout(self, initial_speed: float, obstacles=None, policy=None,
                  horizon_steps: int | None = None) -> np.ndarray:
