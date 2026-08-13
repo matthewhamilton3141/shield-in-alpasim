@@ -5,10 +5,79 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶ Session update — first box bring-up (2026-08-13)
+
+A box exists and is **stopped, not deleted** — resume with `brev start shield-a100`
+(Crusoe `a100-80gb.1x`, A100 80GB, **stoppable**, ~$1.98/hr). Stopping preserves the disk,
+so none of the below needs redoing. Operational lessons are in memory
+(`brev-box-operational-notes`); the short version:
+
+- **Transport:** `brev exec` is unreliable (SSH drops, token expiry). Use `brev refresh`
+  then `ssh -F ~/.brev/ssh_config shield-a100`, and run long jobs in **tmux**.
+- **Driver:** the Crusoe image ships NVIDIA 565; NuRec needs ≥570. Upgraded in place
+  (unhold the mass apt-hold → `cuda-drivers-570` → purge 565 → reboot). `nvidia-smi` = 570.211.
+- **Billing:** guest `shutdown -h` does NOT stop Brev billing; only `brev stop` does.
+
+**Done on the box (all verified, not assumed):** `uv sync --extra all` (torch 2.8+cu128),
+`shielded` registered as Model **and** Config, **32 tests green**, one scene downloaded
+(`~/alpasim/data/nre-artifacts/all-usdzs/23dd34ea-…usdz`, 1.7 GB), and
+**`check_scene_geometry.py` PASSES** on it (worst clearance 1.02 m — frames, cover, sampling,
+ego footprint all agree). `data/drivers` mount dir created. HF token supplied ephemerally,
+never persisted to the box.
+
+**Three real bugs found + fixed + pushed (`97b0917` on `origin/main`):**
+1. Stale code — the box had cloned `origin/main` (411aec9), 6 commits behind the whole
+   ground-truth arm. Now pushed, so a fresh clone is correct.
+2. `shielded_configs.yaml` set a stray `wizard.external_services.driver` that conflicted
+   with the in-sim driver service and failed wizard validation. Removed.
+3. `obstacles.py` clamped actor tracks with an inclusive `[start, end]`, but AlpaSim's
+   `interpolate_pose` is half-open `[start, end)` — crashed on a moving actor whose track
+   ends exactly at the query time. The test fake had the same inclusive bug, so 32 green
+   tests hid it. Both fixed to half-open.
+
+**⚠ The phase-3 blocker (the handoff's long-flagged one, now characterized):** the driver runs
+in the **`alpasim-base` container** (built from `Dockerfile` via `uv sync` of the workspace;
+in-tree plugins' entry points are baked in at build). Our **out-of-tree** plugin
+(`~/shield-in-alpasim`) and `~/kitti-nav` are **not in that image**, and the container mounts
+only alpasim's own `src/`+`plugins/` (`base_config.yaml:169-181`). So a render will start the
+renderer (GPU) then fail to load `shielded` in the driver container. The host-venv editable
+install + `kitti_nav.pth` do **not** reach the container. Two ways in, both CPU/Docker work to
+be done **off the meter** before the next render:
+  - (a) make our plugin a workspace member under `~/alpasim/plugins/…` (mounted at
+    `/repo/plugins`) so `uv run` picks it up — cleanest if `uv run` re-syncs it in-container;
+  - (b) add volume mounts for `~/shield-in-alpasim`+`~/kitti-nav` and prefix
+    `services.driver.command` with `uv pip install -e … --no-deps` + a `kitti_nav` path.
+  Also still to wire: `SHIELD_SCENE_USDZ` **inside** the container via
+  `services.driver.environments`, pointing at the container-side scene path.
+
+**Resume recipe (concrete — these specifics cost real time to re-derive):**
+```bash
+brev start shield-a100 && brev refresh
+S="ssh -F ~/.brev/ssh_config shield-a100"     # NOTE: non-interactive ssh does NOT source
+                                              # .bashrc, so EVERY remote uv/cargo call must
+                                              # first: export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH
+$S "export PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH; cd ~/alpasim; uv run alpasim-info | grep shielded"
+```
+- Downloaded scene (host path for `SHIELD_SCENE_USDZ` / `check_scene_geometry.py`):
+  `~/alpasim/data/nre-artifacts/all-usdzs/23dd34ea-a8d1-410c-aef7-d13f554cc4c9.usdz`
+- `kitti_nav` is importable via a `.pth` we added:
+  `~/alpasim/.venv/lib/python3.12/site-packages/kitti_nav.pth` → `~/kitti-nav/src`
+- Run our code with `uv run --project ~/alpasim …`; unit tests need `--with pytest`.
+- HF downloads (token never persisted): pipe it into a tmux env var, e.g.
+  `cat ~/.cache/huggingface/token | $S "read -r T; tmux new-session -d -s dl -e HF_TOKEN=$T '<cmd>'"`
+- Local `HANDOFF.md` is committed (one commit ahead of `origin`, not pushed; the fixes at
+  `97b0917` are pushed). Editing shield code on the Mac then `rsync -az --delete --exclude=.venv
+  --exclude=__pycache__ -e "ssh -F ~/.brev/ssh_config" ~/Documents/shield-in-alpasim/
+  shield-a100:shield-in-alpasim/` keeps the box in sync; re-run `uv pip install -e
+  ~/shield-in-alpasim --no-deps` if entry points change.
+
+---
+
 ## ▶ Where things stand
 
-- **`main` = `9815fa4`**, working tree clean. Branch `fix/real-alpasim-interface` is merged
-  and can be deleted.
+- **Local `main` is one commit ahead of `origin`** (this handoff commit, not pushed).
+  `origin/main` = `97b0917` (the three real-scene fixes above). The "session update" section
+  at the top is the live frontier; the notes below predate the box and are kept for the *why*.
 - **32 tests green**: `python3 -m pytest -q`. Pure Python, no AlpaSim/GPU needed — kitti-nav
   is found as a sibling checkout via `tests/conftest.py`.
 - **The ground-truth arm is code-complete.** `predict()` builds a live obstacle field from
