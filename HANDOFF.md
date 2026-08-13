@@ -35,20 +35,54 @@ never persisted to the box.
    ends exactly at the query time. The test fake had the same inclusive bug, so 32 green
    tests hid it. Both fixed to half-open.
 
-**⚠ The phase-3 blocker (the handoff's long-flagged one, now characterized):** the driver runs
-in the **`alpasim-base` container** (built from `Dockerfile` via `uv sync` of the workspace;
-in-tree plugins' entry points are baked in at build). Our **out-of-tree** plugin
-(`~/shield-in-alpasim`) and `~/kitti-nav` are **not in that image**, and the container mounts
-only alpasim's own `src/`+`plugins/` (`base_config.yaml:169-181`). So a render will start the
-renderer (GPU) then fail to load `shielded` in the driver container. The host-venv editable
-install + `kitti_nav.pth` do **not** reach the container. Two ways in, both CPU/Docker work to
-be done **off the meter** before the next render:
-  - (a) make our plugin a workspace member under `~/alpasim/plugins/…` (mounted at
-    `/repo/plugins`) so `uv run` picks it up — cleanest if `uv run` re-syncs it in-container;
-  - (b) add volume mounts for `~/shield-in-alpasim`+`~/kitti-nav` and prefix
-    `services.driver.command` with `uv pip install -e … --no-deps` + a `kitti_nav` path.
-  Also still to wire: `SHIELD_SCENE_USDZ` **inside** the container via
-  `services.driver.environments`, pointing at the container-side scene path.
+**✔✔ The phase-3 blocker — RESOLVED and VERIFIED on the box (2026-08-13).** The container-load
+test passed: `alpasim-base:0.134.0` built clean (~4 min, CPU, no netrc needed), and a
+render-free `docker run` of the driver container's exact install prefix proved the whole
+chain — `uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps
+--no-build-isolation` installs in <1 s with no network; the `shielded` entry point registers
+and loads `ShieldedDriver`; `import kitti_nav` works via `PYTHONPATH=/mnt/kitti-nav-src` (so
+the `.pth` fallback is unneeded); and `SceneObstacleSource.from_env()` read **106 actors +
+a real ego rig config** from the USDZ through the new `/mnt/nre-data` mount. All four unknowns
+below are now confirmed. Box stopped again after the test. The design details, retained:
+
+The driver runs in the **`alpasim-base` container** (built from `Dockerfile` via
+`uv sync` of the workspace; in-tree plugins' entry points are baked in at build). Our
+**out-of-tree** plugin (`~/shield-in-alpasim`) and `~/kitti-nav` are **not in that image**,
+and the container mounts only alpasim's own `src/`+`plugins/` (`base_config.yaml:174-175`).
+Option (a) alone (workspace-member + mount) does **not** work: the image sets `UV_NO_SYNC=1`
+(Dockerfile), so `uv run` will not re-register a bind-mounted plugin's entry point — an
+explicit install is required regardless of where the plugin sits. So the wiring is **option
+(b), refined**, and it all lives in our own `shielded_configs.yaml` (which is `@package
+_global_`, so it can set `services.driver.*` — same mechanism as `trafficsim/catk.yaml`).
+No AlpaSim fork, no image rebuild. What it does, all verified against upstream source:
+  - **Mounts** (restated in full — OmegaConf *replaces* lists on merge, so the base driver's
+    5 mounts are re-listed, then 3 added): `${scenes.scene_cache}:/mnt/nre-data`,
+    `$SHIELD_SRC→/mnt/shield`, `$KITTI_NAV_SRC→/mnt/kitti-nav-src`.
+  - **Install prefix** on `services.driver.command` (space-joined, run under `bash -c`, so
+    `&&` chains): `uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps
+    --no-build-isolation && uv run -m alpasim_driver.main …`. `--no-deps` (our `alpasim_*`
+    deps are workspace pkgs already in the venv, not on PyPI); `--no-build-isolation` (reuse
+    the venv's setuptools, no network per start); `--python` pins the baked venv.
+  - **kitti_nav** via `PYTHONPATH=/mnt/kitti-nav-src` (plain src-layout package, no install).
+  - **`SHIELD_SCENE_USDZ`** via `environments`, sourced from host `SHIELD_SCENE_USDZ_IN_CONTAINER`
+    (must be the *container-side* path, e.g. `/mnt/nre-data/all-usdzs/<scene>.usdz`); unset →
+    empty field → shield inert (scene.py `from_env`), the designed fallback, not a crash.
+
+  **⚠ Real gap this surfaced:** the base **driver container never mounted the scene cache**
+  (only renderer/physics did), so the shield literally could not open the USDZ. The
+  `${scenes.scene_cache}:/mnt/nre-data` mount above is the fix — without it, ground-truth
+  geometry was unreachable from the driver no matter how the env var was set.
+
+  **All verified by the load test above (2026-08-13):** (1) `uv pip install --python … -e`
+  registers `shielded` and `uv run` loads `ShieldedDriver`; (2) `PYTHONPATH` survives `uv run`
+  (`import kitti_nav` → `/mnt/kitti-nav-src/kitti_nav/__init__.py`), so the `.pth` fallback is
+  moot; (3) `--no-build-isolation` finds setuptools in the venv (install took <1 s, no net).
+
+  **The one thing the load test did NOT exercise:** a live `predict()` under the running
+  driver server + renderer — i.e. the shield actually braking for these 106 actors in a
+  rollout. That needs a real (GPU, metered) render, and is the next step, not part of the
+  wiring. Set `SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/23dd34ea-…usdz` on the
+  host before the wizard run to arm it; leave unset for the inert baseline.
 
 **Resume recipe (concrete — these specifics cost real time to re-derive):**
 ```bash
@@ -328,7 +362,7 @@ python3 scripts/preview_trajectory.py     # -> docs/preview.png
 python3 scripts/preview_trajectory.py --speed 14 --obstacle-x 18 --hz 4
 
 # on a box with AlpaSim (see docs/BOX_SETUP.md for the full sequence):
-cd ~/alpasim && uv pip install -e ~/shield-in-alpasim --no-deps
+cd ~/alpasim && uv pip install -e ~/shield-in-alpasim --no-deps  # host venv, for alpasim-info
 uv run alpasim-info                       # expect `shielded` under alpasim.models
 ./scripts/preflight.sh                    # ordered cheapest-failure-first
 uv run alpasim_wizard deploy=local topology=1gpu driver=shielded wizard.log_dir=$PWD/out
@@ -337,13 +371,17 @@ uv run alpasim_wizard deploy=local topology=1gpu driver=shielded wizard.log_dir=
 **`--no-deps` is required.** Our `alpasim_*` dependencies are workspace packages that do not
 exist on PyPI; AlpaSim's in-tree plugins resolve them via `[tool.uv.sources]`, but we are an
 out-of-tree checkout, so a plain install goes to PyPI and fails. `uv sync --extra all` has
-already provided them.
+already provided them. (The host-venv install above is only so `alpasim-info` on the host can
+see `shielded`; the **driver container** gets its own install via the command prefix in
+`shielded_configs.yaml` — see the phase-3 section at the top.)
 
-To actually arm the shield, the driver container needs the scene path — inside the
-container, not on the host:
+**Arming the shield is now baked into `shielded_configs.yaml`** — the driver container mounts
+the scene cache at `/mnt/nre-data` and reads `SHIELD_SCENE_USDZ` from the env. To point it at
+a scene, set the *container-side* path on the host before the wizard run:
 
 ```bash
-    services.driver.environments='["SHIELD_SCENE_USDZ=/mnt/nre-data/<sceneset>/<scene>.usdz"]'
+export SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/23dd34ea-a8d1-410c-aef7-d13f554cc4c9.usdz
+# leave it unset for an inert (never-fires) shield — the designed fallback
 ```
 
 The wizard defaults to `trafficsim: disabled`, which is what the ground-truth arm wants —
