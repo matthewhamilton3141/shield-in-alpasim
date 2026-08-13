@@ -5,6 +5,37 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶▶▶▶▶ Session update — INSTRUMENTED DIAGNOSIS (2026-08-13, box)
+
+Added `rollout_diagnostics()` (ahead-vs-behind, proposed-vs-shielded, per cycle; committed)
+and re-rendered `shielded_vavam`. The trace **overturned the earlier "shield freezes it"
+guess** and split the problem in two:
+
+1. **The shield is NOT the early bottleneck.** For the first ~10 cycles VaVAM commands
+   `proposed_accel=2.0` (full go) and the shield **allows it — 0 interventions** — yet the sim
+   reports the ego stuck at `speed_in≈0`. Cycle 1 even plans `final_speed=3.33` from `2.13`,
+   but cycle 2 reports `0.0`. **The car isn't executing our accelerating plan.** Ruled out so
+   far: the shield (0 interventions), and the response timing path (unset reference fields →
+   the driver derives waypoint timestamps at our output freq, consistent with our spacing,
+   `main.py:1085-1099`). Leading remaining suspects: the emitted trajectory's shape/headings
+   vs what the MPC controller tracks, or an S223-dynamics/controller mismatch. **Next
+   diagnostic:** pull `out_vdiag/rollouts/*/metrics.parquet` (per-step commanded accel/steer +
+   achieved speed) — it will show whether the controller tracked our waypoints. Needs a brief
+   box session (parquet only, no render).
+2. **When the shield DOES engage (cycle ~11+), it is over-conservative — confirmed.** Road
+   *ahead* clear (`nearest_ahead_gap` 5–6 m) but an actor ~1.2 m *behind* (bearing ≈ −156°)
+   drives `init_clearance` negative, so it reads `collided=True` and brakes to 0. Braking
+   cannot avoid a rear threat — a real limitation of the omnidirectional `clearance()` when the
+   KITTI-tuned shield is dropped into dense surround traffic. A fix would make the shield ignore
+   discs behind the ego that the forward-braking rollout only moves away from (a kitti-nav
+   change — do carefully; a merging car beside/behind does matter).
+
+Box **stopped**. Net: the decorator works, and we now know the ~8 m outcome is mostly (1), not
+the shield — a different bug than assumed. `n_obstacles` climbs 80→150 as traffic closes on the
+stalled ego, consistent with the sitting-duck picture.
+
+---
+
 ## ▶▶▶▶ Session update — SHIELD-WRAPS-A-POLICY, RENDERED (2026-08-13, box)
 
 **The decorator works end-to-end on the box, and the first policy-vs-coast comparison is in.**
