@@ -1,0 +1,73 @@
+# @package _global_
+# Global config for `driver=shielded_vavam`: kitti-nav's shield wrapping VaVAM.
+#
+# Two halves, same shape as shielded_transfuser_configs.yaml:
+#   1. VaVAM's single-camera config, inlined verbatim from the in-tree vavam_configs.yaml.
+#   2. the shield's driver-container wiring, plus SHIELD_INNER_MODEL=vam so from_config builds
+#      VaVAM as the inner policy, and WITHOUT gpus:null (VaVAM runs on the GPU; the numpy
+#      shield rides along). VaVAM is already baked into the image (the `vam` entry point is
+#      registered), so — unlike the transfuser variant — the command prefix installs only the
+#      shield; nothing extra to register.
+#
+# Restated in full because OmegaConf replaces lists on merge. See shielded_configs.yaml for
+# the why of the mount/install/env mechanism.
+
+# ---- (1) VaVAM camera (inlined from vavam_configs.yaml) ----
+runtime:
+  simulation_config:
+    force_gt_duration_us: 3_000_000
+    n_sim_steps: 100
+    n_rollouts: 1
+    control_timestep_us: 500_000
+    ego_mask_rig_config_id: null
+
+    cameras:
+      - height: 1080
+        width: 1920
+        logical_id: camera_front_wide_120fov
+        frame_interval_us: 500_000 # also needs to be in sync
+        shutter_duration_us: 30_000
+
+  extra_cameras:
+    - logical_id: camera_front_wide_120fov
+      rig_to_camera:
+        translation_m: [1.65897811, -0.01443456, 1.51539499]
+        rotation_xyzw: [-0.49929397355810856, 0.5039939168301356, -0.4972939976976715, 0.49939397235113037]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.05231, 0.0, 0.0, 0.0]
+          tangential: [-0.00213, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+
+# ---- (2) driver-container wiring (shield + VaVAM inner policy) ----
+services:
+  driver:
+    # No `gpus: null` (unlike shielded_configs.yaml) — VaVAM runs on the GPU.
+    replicas_per_container: 1
+    volumes:
+      - "${defines.drivers}:/mnt/drivers"                 # holds /mnt/drivers/vavam/<ckpt,tokenizer>
+      - "${wizard.log_dir}:/mnt/output"
+      - "${repo-relative:'src'}:/repo/src"
+      - "${repo-relative:'plugins'}:/repo/plugins"
+      - "${defines.hf_cache}:/root/.cache/huggingface"
+      - "${scenes.scene_cache}:/mnt/nre-data"             # shield reads GT geometry from the usdz
+      - "${oc.env:SHIELD_SRC,${oc.env:HOME}/shield-in-alpasim}:/mnt/shield"
+      - "${oc.env:KITTI_NAV_SRC,${oc.env:HOME}/kitti-nav/src}:/mnt/kitti-nav-src"
+    environments:
+      - "PYTHONPATH=/mnt/kitti-nav-src"
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+      # Build VaVAM as the inner policy the shield filters (driver.py `_build_inner_model`).
+      - "SHIELD_INNER_MODEL=vam"
+    command:
+      # Only the shield needs registering; `vam` is already baked into the image.
+      - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
+      - "uv run -m alpasim_driver.main"
+      - "--config-path=/mnt/output"
+      - "--config-name=driver-config.yaml"
+      - "host=0.0.0.0"
+      - "port={port}"

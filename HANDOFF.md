@@ -5,6 +5,42 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶▶▶▶ Session update — SHIELD-WRAPS-A-POLICY, RENDERED (2026-08-13, box)
+
+**The decorator works end-to-end on the box, and the first policy-vs-coast comparison is in.**
+
+- **Pivoted Transfuser → VaVAM.** Transfuser was blocked: not in the base image (deps
+  `timm`/`beartype`/`jaxtyping` missing, entry point unregistered → needs an image rebuild)
+  *and* no checkpoint of known provenance. The models actually baked in are `alpamayo1/1_5/2`,
+  `manual` (interactive pygame — useless headless), and **`vam` (VaVAM)**. VaVAM won: already
+  registered (no rebuild), **one camera** (`camera_front_wide_120fov`, matching the shield's
+  existing config), public checksummed weights (valeoai GitHub release, no HF token). Built
+  `driver=shielded_vavam` (+`_configs`), downloaded VaVAM-S (~1.3 GB) to `data/drivers/vavam/`.
+- **Rendered, armed on scene 23dd34ea.** Driver log: `Shielding inner policy 'vam' (VAMModel)`,
+  `Loaded 106 scene actors`, and — the payoff — **`Shield intervened on 1/6 sub-steps`** every
+  cycle. VaVAM proposes, the shield vetoes. The tracker + decorator are proven in a live render.
+- **But the result is ~identical to coast**, and that's the honest finding:
+
+  | | coast (out_first) | shielded_vavam (out_vavam) |
+  |---|---|---|
+  | collision_at_fault | 0 | 0 |
+  | collision_rear | 1 | 1 |
+  | dist_traveled_m | 8.07 | 8.17 |
+  | status / score | pass / 0.137 | pass / 0.138 |
+
+  **Why:** dense scene (106 actors), a lead actor sits within braking distance at GT handover,
+  so the shield brakes hard immediately (`final speed 0.0, collided=True` in its lookahead)
+  and pins the ego — *regardless of what VaVAM proposes*. The shield is the binding constraint,
+  not the policy, so VaVAM and coast converge to the same ~8 m-then-rear-ended outcome. The
+  decorator is proven; this **scene doesn't discriminate between policies** because the shield
+  saturates. To make the veto *matter*, next session needs either a less-dense scene / one with
+  open road ahead, or to investigate whether the immediate brake-to-zero is over-conservative
+  (safety_margin 0.30 m, max_decel 4.5 — a tuning question) vs a genuinely blocked road.
+- Box **stopped**. (VaVAM video not pulled — scp raced the shutdown; it's visually the same as
+  coast. Metrics above are from `out_vavam/aggregate/results-summary.json` on the box.)
+
+---
+
 ## ▶▶▶ Session update — THE SHIELD CAN NOW WRAP A POLICY (2026-08-13, Mac, off-meter)
 
 The first render (below) confirmed empirically that the coasting shield is a sitting duck.
