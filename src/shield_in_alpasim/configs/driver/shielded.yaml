@@ -1,0 +1,50 @@
+# Should be used in defaults list, e.g.
+# - /driver: shielded
+# Type validation happens at driver runtime via OmegaConf.structured merge
+
+defaults:
+  - _self_             # YAML values override schema defaults
+  - shielded_configs   # Load runtime config overrides
+
+# Shielded Driver Configuration for Alpasim
+# kitti-nav's hard safety shield as a driver. Like the `manual` driver it is analytic
+# (pure numpy) rather than learned: no checkpoint, no GPU.
+
+# Logging level (uses wizard's global setting)
+log_level: ${wizard.log_level}
+
+# Model configuration
+model:
+  model_type: shielded  # Entry-point name in alpasim.models registry
+  # The shield has no learned weights, but ModelConfig.checkpoint_path is MISSING
+  # (required) in the schema, so it needs a value. Same dodge as the manual driver.
+  checkpoint_path: "unused"
+  device: "cpu"
+
+# Server configuration
+host: "0.0.0.0"
+port: ???
+
+# Inference configuration
+inference:
+  # One camera, because AlpaSim renders at least one and the stub obstacle field ignores
+  # pixels entirely. Solving problem 1 (README) is what will make this list meaningful.
+  use_cameras: ["camera_front_wide_120fov"]
+  max_batch_size: 1
+  subsample_factor: 1
+  context_length: 1  # Shield is memoryless: only the latest frame matters
+
+# Route configuration (the shield filters commands, it does not follow a route yet)
+route:
+  default_command: 2  # straight
+  use_waypoint_commands: false
+
+# Output configuration
+output_dir: "/mnt/output/driver"
+
+# Off: the shield's output is already certified against its own dynamics model, and
+# re-smoothing it downstream would invalidate that guarantee.
+trajectory_optimizer:
+  enabled: false
+
+plot_debug_images: false

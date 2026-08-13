@@ -12,6 +12,10 @@ source also carries a provenance header in the file that uses it.
 - **Used for:** the closed-loop AV driver-plugin harness (renderer + physics + traffic
   microservices) this repo's plugin registers against. Not vendored — installed as a
   dependency per its own setup instructions.
+- **Adapted from:** `src/shield_in_alpasim/configs/driver/*.yaml` follow the structure of
+  AlpaSim's own `src/wizard/configs/driver/manual{,_configs}.yaml` — the closest stock
+  driver to this one (CPU-only, no checkpoint). Field names and layout are AlpaSim's; the
+  values are this repo's.
 
 ### kitti-nav
 - **Source:** <https://github.com/matthewhamilton3141/kitti-nav>

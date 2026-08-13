@@ -1,0 +1,31 @@
+# @package _global_
+# Runtime configuration overrides for the shielded driver.
+#
+# CPU-only and cheap: the shield is a bounded search over accel/steer candidates, not a
+# network forward pass, so it needs no GPU and its control loop can run fast.
+
+wizard:
+  external_services:
+    driver:
+      - "localhost:6789"
+
+runtime:
+  simulation_config:
+    force_gt_duration_us: 3_000_000  # 3 s of ground-truth replay before the driver takes over
+    n_sim_steps: 100
+    n_rollouts: 1
+    # 5 Hz control. cfg.dt in kitti-nav is 0.1 s, so the driver sub-steps the shield twice
+    # per waypoint (see ShieldedDriver._rollout) to keep it at its own tested rate.
+    control_timestep_us: 200_000
+
+    cameras:
+      - height: 480
+        width: 854
+        logical_id: camera_front_wide_120fov
+        frame_interval_us: 100_000
+        shutter_duration_us: 30_000
+
+services:
+  driver:
+    gpus: null  # No GPU: the shield is numpy
+    replicas_per_container: 1

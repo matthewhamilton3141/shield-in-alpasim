@@ -1,16 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "shield-in-alpasim"
 version = "0.0.1"
 description = "kitti-nav's hard safety shield, wrapped as an AlpaSim driver plugin"
-requires-python = ">=3.10"
+# Matches AlpaSim's own workspace floor (its plugins pin >=3.11,<3.13).
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "numpy>=1.23.0",
     "alpasim_plugins",
     "alpasim_driver",
 ]
 
+# Registers the driver with AlpaSim's plugin registry: `model_type: shielded`.
 [project.entry-points."alpasim.models"]
 shielded = "shield_in_alpasim.driver:ShieldedDriver"
 
+# Puts this package's YAML on Hydra's search path, so `driver=shielded` resolves.
+[project.entry-points."alpasim.configs"]
+shielded = "shield_in_alpasim.configs"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"shield_in_alpasim.configs" = ["**/*.yaml"]
