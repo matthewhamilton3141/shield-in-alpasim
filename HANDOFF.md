@@ -5,6 +5,38 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶▶ Session update — FIRST RENDERED RUN (2026-08-13, later same day)
+
+**The shielded driver rendered a full rollout and AlpaSim scored it `pass`.** The phase-3
+container wiring (below) is done, verified, and committed on branch `phase3-container-wiring`
+(commits `1df9711` wiring + `bb15c42` doc). The render itself:
+
+- Scene `clipgt-01d503d4…` → resolves to artifact `23dd34ea…usdz` (the one we downloaded and
+  geometry-validated; the sceneset symlinks it). `limit_to_first_n=1` picks this scene.
+- Driver log: `Loaded 106 scene actors` — the GT geometry reached the driver container and
+  the shield ran the whole rollout. End-to-end wiring proven under a live render.
+- **Result: `collision_at_fault=0`, `offroad=0` → PASS** (score 0.137). But `collision_rear=1`
+  and `dist_traveled_m=8.07` vs `gt_dist_traveled_m=73.77`.
+- **Honest reading:** exactly the predicted coasting failure. The shield is a filter, not a
+  driver, so with no upstream policy the car commands (0,0), coasts ~8 m, and a **non-reactive
+  logged actor rear-ends it** (logged actors never yield; rear hits score not-at-fault, hence
+  the pass). This is a WEAK test of the braking logic — the car never moved fast enough to
+  force a forward veto. It empirically confirms the "Open decision" below: the shield needs a
+  real policy upstream (decorator over VaVAM/Transfuser) to have something meaningful to veto.
+- Artifacts pulled to Mac `out_first_result/` (front-cam mp4, results-summary.json, metrics).
+- Two non-fatal log noises: a `MinADEScorer` interpolation-timestamp edge error (a half-open
+  range issue in AlpaSim's own eval, not ours) and a Grafana `$worker_id` telemetry-plot
+  warning. Neither stopped the run.
+- **Next step:** build the learned-perception arm — `ShieldedDriver` as a decorator over a
+  camera-based AlpaSim driver — so the car actually drives and the shield has real vetoes to
+  make. Then the degradation experiment. The GT arm is now proven runnable.
+- Minor cleanup for next time: `shielded_configs.yaml` uses `${oc.env:…,}` (empty default);
+  OmegaConf warns it wants `,''` (quoted). Harmless (resolved fine), but tidy it.
+
+Box **stopped** again after the run.
+
+---
+
 ## ▶ Session update — first box bring-up (2026-08-13)
 
 A box exists and is **stopped, not deleted** — resume with `brev start shield-a100`

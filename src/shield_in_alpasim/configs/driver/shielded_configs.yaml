@@ -67,7 +67,7 @@ services:
       # never fires (scene.py `from_env`), which is the designed inert fallback, not a crash.
       # Set SHIELD_SCENE_USDZ_IN_CONTAINER on the host to the *container-side* path, e.g.
       # /mnt/nre-data/all-usdzs/<scene>.usdz (the host path won't exist in the container).
-      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,}"
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
 
     # Space-joined and run under `bash -c` (wizard services.py `_build_command` +
     # deployment/docker_compose.py), so the `&&` chains the install ahead of the driver.
