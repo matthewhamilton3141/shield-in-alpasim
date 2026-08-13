@@ -7,39 +7,39 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ## ▶ Where things stand
 
-- **`main` = `c5d2bff`**, working tree clean. Branch `fix/real-alpasim-interface` is merged
+- **`main` = `9815fa4`**, working tree clean. Branch `fix/real-alpasim-interface` is merged
   and can be deleted.
-- **17 tests green**: `python3 -m pytest -q`. Pure Python, no AlpaSim/GPU needed — kitti-nav
+- **32 tests green**: `python3 -m pytest -q`. Pure Python, no AlpaSim/GPU needed — kitti-nav
   is found as a sibling checkout via `tests/conftest.py`.
-- **`obstacles.py` exists and the shield brakes for scene geometry** (`test_obstacles.py`).
-  Not yet reachable from `predict()` — see the wiring gap below.
-- **kitti-nav `main` = `7a40d29`** (README now leads with `docs/drive_scene.gif` and the
-  0-collision result; its shield-in-alpasim section was corrected to match reality).
-- **Never run under AlpaSim.** Everything below the AlpaSim boundary is verified by reading
-  upstream source, not by executing it. That is the single biggest caveat here.
+- **The ground-truth arm is code-complete.** `predict()` builds a live obstacle field from
+  the scene's actors and the shield brakes for them. Needs `$SHIELD_SCENE_USDZ` set.
+- **Everything that can be done without a GPU is done.** The next step is a Brev box; see
+  [`docs/BOX_SETUP.md`](docs/BOX_SETUP.md).
+- **kitti-nav `main` = `7a40d29`** (README leads with `docs/drive_scene.gif` and the
+  0-collision result; its shield-in-alpasim section matches reality).
+- **⚠ Never run under AlpaSim.** Everything below the AlpaSim boundary is verified by reading
+  upstream source, not by executing it. That is the single biggest caveat in this repo, and
+  it applies to `scripts/preflight.sh` and `scripts/check_scene_geometry.py` too — both are
+  unrun. Preflight is built to fail loudly and early for that reason.
 
-## What this session changed
+## How we got here
 
-The scaffold had been written against an *assumed* AlpaSim API. Checked against
-`NVlabs/alpasim` upstream and corrected four things, one a guaranteed runtime crash:
+Three rounds, each correcting the one before:
 
-| Was | Actually |
-| --- | --- |
-| `ModelPrediction(trajectory_xy=…, headings=…)` | Takes `candidate_positions` `(K,T,3)` + `candidate_rotations` `(K,T,3,3)`; ground-plane planners use `ModelPrediction.from_planar()`. The old call would have `TypeError`'d on first inference. |
-| `camera_ids = ["front_wide"]` hardcoded | Real IDs are like `camera_front_wide_120fov`, and come from config. `from_config` was accepting `camera_ids`/`context_length` and dropping both. |
-| `_headings_from_xy` | Reimplemented `BaseTrajectoryModel._compute_headings_from_trajectory` line for line. |
-| `NoObstacles` class | Reimplemented kitti-nav's `CircleField(None)`. |
+1. **Scaffold**, written against an *assumed* AlpaSim API.
+2. **Corrected against upstream** — four fixes, one a guaranteed `TypeError` on first
+   inference (`ModelPrediction` takes `candidate_positions`/`candidate_rotations`, not
+   `trajectory_xy`/`headings`; real camera IDs look like `camera_front_wide_120fov` and come
+   from config; two kitti-nav helpers had been reimplemented instead of imported). Also
+   learned that **a plugin needs two entry points**: `alpasim.models` loads the class,
+   `alpasim.configs` is what makes `driver=shielded` resolvable.
+3. **Ground-truth geometry** — the sections below.
 
-Also: `predict()` now calls `_validate_cameras`; `_rollout` delegates to
-`kitti_nav.shielded_rollout` (which additionally returns the intervention/collision stats
-plan step 5 needs); obstacles are constructor-injectable.
+The recurring lesson: every assumption about AlpaSim's interface that was not read from
+upstream source turned out to be wrong. `/tmp/alpasim-src` (shallow clone) is worth
+re-cloning to check anything before building on it.
 
-**A plugin needs two entry points, not one.** `alpasim.models` alone lets the harness load
-the class but gives no way to select it. Added `alpasim.configs` +
-`configs/driver/shielded{,_configs}.yaml`, modelled on AlpaSim's `manual` driver (its
-closest stock analogue — CPU-only, no checkpoint).
-
-## ⚠ Open decision, blocking everything else
+## ⚠ Open decision — no longer blocks the first result, still blocks the experiment
 
 **`ShieldedDriver` should probably become a decorator over another `BaseTrajectoryModel`,
 not a standalone one.**
@@ -47,6 +47,11 @@ not a standalone one.**
 The shield is a *filter*: it takes a proposed `(accel, steer)` and certifies it. It never
 proposes one. Today `_rollout` commands `(0.0, 0.0)` — "go straight, hold speed" — which is
 coasting, not driving. Nothing here will ever drive itself without a policy upstream.
+
+**What this does and does not block.** A first run is now possible without deciding: the car
+coasts, the shield brakes for real scene actors, and that already produces a video and an
+intervention count. What it blocks is the *interesting* comparison — a policy that actually
+drives, and therefore a shield that has something non-trivial to veto.
 
 kitti-nav's PPO policies (`models/ppo_kitti_shielded.zip`, 0 collisions on KITTI transfer)
 do drive, but consume **lidar BEV occupancy**, and AlpaSim hands you **camera pixels** — so
@@ -225,6 +230,26 @@ bug: it replays the scene's **logged human drive** against the scene's **logged 
 asserts the ego never collides. A real drive did not crash, so a collision means our
 geometry is wrong — frames, quaternion convention, or ego footprint. Pure CPU, no renderer,
 no cost.
+
+### Budget: $24.73 on the Brev account
+
+At ~$1.10/hr that is **~22 hours of A100 time** — the unit worth thinking in, because one
+forgotten overnight is ~10 hours, i.e. half the balance for nothing.
+
+Checkpoints to tell whether it is going well:
+
+| By | Should have | Spent |
+| --- | --- | --- |
+| hour ~4 | preflight green, `check_scene_geometry.py` passing | ~$4.50 |
+| hour ~8 | first rendered run done | ~$9 |
+| — | **reserve ~8 hours for the actual experiment** | ~$9 |
+
+Past hour 8 with phase 2 still failing means the *approach* is wrong, not the config — stop
+the instance and bring it back to the Mac. **The moment you are editing a `.py` file, stop
+the instance**; nothing here needs a GPU to edit, and most failure modes are pure Python.
+
+Running out before a result is information, not a disaster: it says setup is harder than the
+reading suggested, and *where* it went is what to record before topping up.
 
 ## ▶ Runbook
 
