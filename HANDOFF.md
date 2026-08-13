@@ -206,18 +206,19 @@ section above, the ground-truth arm is confirmed buildable, so this is no longer
 Full plan, instance sizing, cost model and the phased command sequence now live in
 [`docs/BOX_SETUP.md`](docs/BOX_SETUP.md). The short version:
 
-- **Two things to start immediately**, because they have multi-hour-to-multi-day lead times
-  and block everything: request the gated HF dataset
-  (`nvidia/PhysicalAI-Autonomous-Vehicles-NuRec`), and request an **AWS GPU quota increase**
-  (new accounts are capped at 0 vCPUs for G-family instances).
-- **$100 of AWS credits covers this comfortably.** `g6e.xlarge` (L40S, 48 GB) at roughly
-  $1.86/hr is ~53 hours — against a bring-up that should take a handful. AWS has no
-  single-A100 instance, so the earlier Brev A100 plan does not port; 48 GB simply removes
-  the "is 40 GB enough" question we never answered. `g5.xlarge` (24 GB, ~$1.01/hr) is the
-  fallback if the g6e quota is refused.
+- **One thing to start immediately**, because it has a lead time and blocks everything:
+  request the gated HF dataset (`nvidia/PhysicalAI-Autonomous-Vehicles-NuRec`). Free.
+- **Provider is Brev**, A100 40 GB at ~$1.10/hr. There were $100 of AWS credits available
+  and we passed: AWS has no hard spending cap, so the tail risk is an unbounded bill from a
+  forgotten instance, and Brev's idle auto-stop addresses exactly that. The whole bring-up
+  should cost under $30. Also relevant: AWS has no single-A100 instance, so the sizing would
+  have had to change anyway.
 - **Order of operations on the box is the whole point:** `scripts/preflight.sh` →
   `wizard.run_method=NONE` (generates configs and fetches artifacts *without simulating*) →
-  `scripts/check_scene_geometry.py` → only then a rendered run.
+  `scripts/check_scene_geometry.py` → only then a rendered run. Phases 1–2 use no GPU at
+  all, and they are where nearly all the hours go.
+- **Set the auto-stop, and run `sudo shutdown -h +240` on connect.** A box left running
+  overnight costs more than every other inefficiency combined.
 
 `check_scene_geometry.py` is the one to run first and the one most likely to catch a real
 bug: it replays the scene's **logged human drive** against the scene's **logged actors** and
