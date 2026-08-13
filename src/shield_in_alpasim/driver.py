@@ -43,7 +43,13 @@ except ImportError:  # AlpaSim isn't installed (e.g. on a Mac dev box, no GPU st
     _HAS_ALPASIM = False
     BaseTrajectoryModel = object  # type: ignore[assignment,misc]
 
-from kitti_nav.vehicle import CircleField, VehicleConfig, VehicleState, shielded_rollout
+from kitti_nav.vehicle import (
+    CircleField,
+    VehicleConfig,
+    VehicleState,
+    clearance,
+    shielded_rollout,
+)
 from shield_in_alpasim.control import make_tracking_policy
 from shield_in_alpasim.scene import SceneObstacleSource, ego_pose_from_history
 
@@ -66,6 +72,41 @@ def _coast(_state) -> tuple[float, float]:
     point of the "the shield needs a policy" caveat in HANDOFF.md.
     """
     return 0.0, 0.0
+
+
+def rollout_diagnostics(field, state0: VehicleState, cfg: VehicleConfig, policy) -> dict:
+    """Per-cycle diagnostics: is the shield braking for something *ahead*, or *behind*?
+
+    The whole field is in the rig frame — ego at the origin, heading +x — so the sign of an
+    obstacle disc's x coordinate says ahead (+) or behind (−). That distinction is the crux
+    of "over-conservative vs genuinely blocked": braking cannot avoid a threat behind the
+    ego, so a shield that freezes for a rear/side disc is being over-conservative, while one
+    that stops for a lead disc is doing its job. `nearest_gap_m` is the surface-to-origin gap
+    (negative means a disc already overlaps the rig origin — the shield will read that as an
+    unavoidable collision and command full brake).
+
+    Pure numpy so it is unit-tested here rather than only observed on a metered run.
+    """
+    circles = np.asarray(getattr(field, "circles", np.zeros((0, 3))), float).reshape(-1, 3)
+    proposed_accel, proposed_steer = policy(state0)
+    diag: dict = {
+        "speed_in": round(float(state0.v), 2),
+        "proposed_accel": round(float(proposed_accel), 2),
+        "proposed_steer": round(float(proposed_steer), 3),
+        "init_clearance_m": round(float(clearance(state0, field, cfg)), 2),
+        "n_obstacles": int(len(circles)),
+    }
+    if len(circles):
+        gap = np.linalg.norm(circles[:, :2], axis=1) - circles[:, 2]
+        i = int(np.argmin(gap))
+        diag["nearest_gap_m"] = round(float(gap[i]), 2)
+        diag["nearest_bearing_deg"] = round(float(np.degrees(np.arctan2(circles[i, 1], circles[i, 0]))), 1)
+        ahead = circles[circles[:, 0] > 0.0]
+        diag["nearest_ahead_gap_m"] = (
+            round(float(np.min(np.linalg.norm(ahead[:, :2], axis=1) - ahead[:, 2])), 2)
+            if len(ahead) else None
+        )
+    return diag
 
 
 class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
@@ -201,21 +242,23 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # shield (and its braking lookahead) always runs at its own tested integration rate,
         # regardless of what output_frequency_hz AlpaSim asks for.
         substeps_per_waypoint = max(1, round(1.0 / self._output_frequency_hz / self._cfg.dt))
-        states, stats = shielded_rollout(
-            policy,
-            state,
-            obstacles,
-            self._cfg,
-            n_steps=self._horizon_steps * substeps_per_waypoint,
-        )
+        n_steps = self._horizon_steps * substeps_per_waypoint
+
+        # Snapshot the situation *before* the shield acts, so the log distinguishes "blocked
+        # ahead" (shield doing its job) from "braking for a rear/side actor" (over-conservative).
+        diag = rollout_diagnostics(obstacles, state, self._cfg, policy)
+
+        states, stats = shielded_rollout(policy, state, obstacles, self._cfg, n_steps=n_steps)
+
         # The intervention count is the experiment's signal: how often the shield overrode the
-        # inner policy. Log it whenever it fires so a run's driver log carries the evidence.
-        if stats["n_interventions"]:
-            logger.info(
-                "Shield intervened on %d/%d sub-steps (final speed %.1f m/s, collided=%s)",
-                stats["n_interventions"], self._horizon_steps * substeps_per_waypoint,
-                stats["final_speed"], stats["collided"],
-            )
+        # inner policy. One line per cycle (runs are short) so a run's driver log is a full
+        # trace of proposed-vs-shielded and what the shield was reacting to.
+        diag.update(
+            n_interventions=stats["n_interventions"],
+            final_speed=round(float(stats["final_speed"]), 2),
+            collided=stats["collided"],
+        )
+        logger.info("shield cycle %s", diag)
         xy = np.zeros((self._horizon_steps, 2))
         for t in range(self._horizon_steps):
             # states[0] is the initial state, so waypoint t lands substeps*(t+1) steps in.

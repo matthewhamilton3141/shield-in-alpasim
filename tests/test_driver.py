@@ -108,3 +108,34 @@ def test_shield_brakes_for_an_obstacle_the_inner_plan_drives_into():
     # Either way the shield keeps the nose short of the obstacle surface (~17 m).
     assert braked[-1, 0] < 17.0
     assert coasting_into_it[-1, 0] < 17.0
+
+
+# --- diagnostics: ahead vs behind, the "over-conservative or blocked?" signal ---
+
+def test_diagnostics_flag_an_obstacle_ahead():
+    from kitti_nav.vehicle import CircleField, VehicleState
+
+    from shield_in_alpasim.driver import rollout_diagnostics
+
+    field = CircleField(np.array([[15.0, 0.0, 1.0]]))  # 15 m dead ahead
+    state = VehicleState(x=0.0, y=0.0, yaw=0.0, v=6.0)
+    d = rollout_diagnostics(field, state, VehicleConfig(), policy=lambda _s: (1.0, 0.0))
+    assert d["proposed_accel"] == 1.0
+    assert abs(d["nearest_bearing_deg"]) < 1.0          # straight ahead
+    assert d["nearest_ahead_gap_m"] == 14.0             # 15 m minus the 1 m radius
+    assert d["init_clearance_m"] > 0                     # not in collision
+
+
+def test_diagnostics_distinguish_a_rear_obstacle():
+    # An actor close *behind* the ego (dense traffic). It dominates nearest_gap but there is
+    # nothing ahead — the tell-tale of a shield that would freeze for something braking cannot
+    # avoid. nearest_ahead_gap_m is None precisely because no disc is in front.
+    from kitti_nav.vehicle import CircleField, VehicleState
+
+    from shield_in_alpasim.driver import rollout_diagnostics
+
+    field = CircleField(np.array([[-3.0, 0.0, 1.0]]))  # 3 m behind
+    state = VehicleState(x=0.0, y=0.0, yaw=0.0, v=6.0)
+    d = rollout_diagnostics(field, state, VehicleConfig(), policy=lambda _s: (0.0, 0.0))
+    assert abs(abs(d["nearest_bearing_deg"]) - 180.0) < 1.0  # directly behind
+    assert d["nearest_ahead_gap_m"] is None
