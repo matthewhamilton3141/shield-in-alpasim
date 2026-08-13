@@ -9,8 +9,10 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 - **`main` = `c5d2bff`**, working tree clean. Branch `fix/real-alpasim-interface` is merged
   and can be deleted.
-- **4 tests green**: `python3 -m pytest -q`. Pure Python, no AlpaSim/GPU needed — kitti-nav
+- **17 tests green**: `python3 -m pytest -q`. Pure Python, no AlpaSim/GPU needed — kitti-nav
   is found as a sibling checkout via `tests/conftest.py`.
+- **`obstacles.py` exists and the shield brakes for scene geometry** (`test_obstacles.py`).
+  Not yet reachable from `predict()` — see the wiring gap below.
 - **kitti-nav `main` = `7a40d29`** (README now leads with `docs/drive_scene.gif` and the
   0-collision result; its shield-in-alpasim section was corrected to match reality).
 - **Never run under AlpaSim.** Everything below the AlpaSim boundary is verified by reading
@@ -116,6 +118,53 @@ Two constraints that shape the experiment:
 degradation experiment now only needs the learned-perception arm built, and the decorator
 decision above is the real blocker again.
 
+### Built: `src/shield_in_alpasim/obstacles.py`
+
+`TrafficObjects` → oriented boxes → disc cover → kitti-nav `CircleField`, in the ego's rig
+frame. Same conservative cover kitti-nav uses on the ego (`vehicle.footprint_discs`), but
+re-derived rather than called: that one measures offsets from the *rear axle* and takes a
+`VehicleConfig`, while an actor's pose sits at its box centre. Two lines of shared algebra —
+if the radius formula changes upstream, change it here too.
+
+The pure-numpy core takes plain arrays; only `field_from_traffic_objects` touches AlpaSim
+types, and only through `vec3` / `yaw()` / `interpolate_pose` / `get_time_range_tuple`,
+because `Pose` and `Trajectory` are **compiled Rust** (`utils_rs`) and cannot be imported on
+the Mac. Tests fake exactly that surface and nothing wider.
+
+Decisions worth knowing:
+- Actors whose track does not cover *now* are **dropped, not extrapolated** — an ended track
+  says nothing about where the actor is, and a phantom obstacle in front of a braking
+  certificate is worse than none. Static objects are exempt (constant pose, so clamping is
+  exact).
+- The `EGO` box is dropped by id; the runtime prepends it, and shielding against your own
+  footprint pins the car at zero speed.
+- Yaw-only projection to the ground plane. The shield is a BEV kinematic model with no pitch
+  or roll, so full SE(3) would be discarded a line later. Costs a little on graded road.
+- The cover's **longitudinal** bulge (~0.60 m for a 4.5 m car at 5 discs) dominates its
+  lateral excess (~0.12 m) — a disc circumscribing a segment overhangs the flat end. Always
+  outward, so gaps read short, never long. Tests assert this analytically.
+
+Sanity check, not vacuous: from 12 m/s at an actor 30 m ahead, an empty field runs the nose
+to 75.8 m; this field stops it at 26.30 m, with the actor's face at 27.75 m.
+
+### ⚠ The wiring gap: `predict()` cannot reach this yet
+
+`PredictionInput` has no scene id and no timestamp, and `BaseTrajectoryModel` has **no
+session hook** — the servicer keeps `debug_scene_id` on its own `Session`
+(`driver/main.py:174,218`) and never passes it to the model. So the driver cannot ask "which
+scene am I in?" through the sanctioned interface. Two ways out, unresolved:
+
+- **(a) Config-level scene path.** Add the artifact path to `configs/driver/shielded.yaml`,
+  load `traffic_objects` once in `from_config`. No fork. One scene per run — which is all
+  the baseline arm needs at first. Timestamp can come off the newest `CameraFrame`, and ego
+  pose off the last entry of `ego_pose_history`.
+- **(b) Fork `main.py`** to put `scene_id` (and a timestamp) on `PredictionInput`. Honest
+  about what it is — the privileged channel, made explicit — and it scales to multi-scene
+  runs, but it is a patch against upstream to carry.
+
+Start with (a); it is reversible and unblocks a first result. Neither is verifiable from the
+Mac.
+
 ## The remaining open problem
 
 **Trajectory ⇄ per-step command.** The shield emits `(accel, steer)`; AlpaSim wants
@@ -136,11 +185,9 @@ section above, the ground-truth arm is confirmed buildable, so this is no longer
 
 Two tracks, and the first no longer needs a GPU.
 
-**On the Mac:** write the obstacle adapter — `SceneDataSource.traffic_objects` → kitti-nav
-`CircleField`, at the ego pose and timestamp of the current `PredictionInput`. Needs the
-`local -> rig_est` transform and a circle-cover of each `AABB`. Testable against a
-hand-built `TrafficObjects` without any scene download, which is how the existing 4 tests
-already avoid AlpaSim.
+**On the Mac:** pick (a) or (b) for the wiring gap above and connect `obstacles.py` to
+`predict()`. The geometry itself is done and tested; what is missing is only how the driver
+learns which scene it is in. Everything downstream of that call is already exercised.
 
 **Plan step 2, on a rented box:** get AlpaSim running against a bundled sample scene with
 the inert driver. Proves entry points, Hydra config, `camera_ids`, and `context_length`
