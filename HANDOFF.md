@@ -5,6 +5,33 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶ Unshielded-vs-shielded comparison, scene 23dd34ea (2026-08-13)
+
+Ran `driver=vavam` (unshielded, same VaVAM-S width_768 checkpoint via
+`driver.model.checkpoint_path=` override) against the shielded run on the same scene:
+
+| | unshielded VaVAM | shielded VaVAM |
+|---|---|---|
+| dist_traveled_m | 79.3 | 77.9 |
+| collision_at_fault / rear / offroad | 0 / 0 / 0 | 0 / 0 / 0 |
+| progress / score | 1.0 / 1.0 | 1.0 / 1.0 |
+| shield interventions | — | 6/5/4/3/2 (early) |
+
+**Honest read:** on this scene both are perfectly safe, so the shield prevented *no* collision
+here — VaVAM didn't need saving. What the shield *did* cost is ~1.4 m of progress (its
+conservatism trimming VaVAM's throttle). So this single scene captures the shield's **tax**
+but not its **benefit**. A safety shield only proves its worth on scenes where the unshielded
+policy *fails* — this benign scene isn't one.
+
+**Therefore the real experiment needs a scene sweep** to find divergence (unshielded VaVAM
+collides, shielded does not). That needs **more scenes downloaded** — which needs the gated HF
+token (supplied ephemerally, never persisted; see `brev-box-operational-notes`). Recipe:
+`scenes.limit_to_first_n=N` for both `driver=vavam` and `driver=shielded_vavam`, then compare
+`collision_at_fault` rate and mean progress across scenes. That N-scene table is the headline
+result; one clean scene is a working pipeline, not a finding.
+
+---
+
 ## ★ IT DRIVES — shielded VaVAM, full route, zero collisions, score 1.0 (2026-08-13)
 
 The horizon fix landed and the confirming render is unambiguous. `driver=shielded_vavam` on
