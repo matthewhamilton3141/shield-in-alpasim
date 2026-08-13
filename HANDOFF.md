@@ -5,6 +5,32 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ✔✔✔ ROOT CAUSE FOUND + FIXED (2026-08-13) — the trajectory was too short
+
+**Neither the shield nor the policy was the problem — our emitted trajectory was too short.**
+The parquet + controller-CSV diagnosis (box session, per the prep recipe below) nailed it:
+
+- During GT replay (0–3 s) the ego holds ~2.2 m/s. **At handover the controller commands hard
+  braking** (`u_longitudinal_actuation` −2 to −4) and the car halts over ~3 s. The controller
+  CSV (`out_vdiag/controller/*.csv`) shows its reference point pinned at the car's position.
+- **Why:** the MPC has a **2.0 s horizon** (`n_horizon=20 × dt_mpc=0.1`, `controller/default.yaml`)
+  and *clamps* horizon timestamps to the reference trajectory's time range
+  (`linear_mpc.py:_interpolate_reference`). Our driver emitted only **6 waypoints ≈ 0.6 s**, so
+  1.4 s of the MPC horizon clamped to our last waypoint — a stationary target ~2 m ahead — and
+  the MPC braked to stop at it. **The coast baseline had the same 6-waypoint output, which is
+  why BOTH runs died at ~8 m.** It was never the shield.
+- **Fix (committed):** emit a trajectory spanning `DEFAULT_HORIZON_S = 3.0 s` (clears the 2.0 s
+  MPC horizon), derived from `output_frequency_hz` (30 waypoints at 10 Hz). `predict()` also
+  rolls out at least the inner model's own plan length. `driver.py` constructor now sizes
+  `horizon_steps` from the rate; `_rollout` takes a horizon override; the `shield cycle` log
+  gained `horizon_s`. 47 tests green (+2).
+- **Not yet re-rendered.** Next box session: render `shielded_vavam` (and the coast baseline)
+  and confirm the car now actually drives — `dist_traveled_m` should approach `gt_dist` ~74 m
+  instead of ~8 m. THEN the shield's over-conservatism (rear actors, finding 2 below) becomes
+  the next thing to see, now that the car moves.
+
+---
+
 ## ▶ PREPPED FOR NEXT BOX SESSION (2026-08-13, Mac, off-meter) — read this first
 
 Everything below was staged so the next box session is short. Off-meter findings + a turnkey

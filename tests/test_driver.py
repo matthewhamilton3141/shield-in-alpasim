@@ -43,6 +43,25 @@ def test_rollout_waypoints_land_on_the_output_period():
     assert np.allclose(np.diff(xy[:, 0]), 2.5)
 
 
+def test_default_horizon_spans_the_mpc_window():
+    # No explicit horizon_steps -> derive from the rate to span DEFAULT_HORIZON_S (3.0 s),
+    # which must cover the controller's 2.0 s MPC horizon or the MPC brakes to a stop at our
+    # truncated endpoint. At 10 Hz that is 30 waypoints.
+    from shield_in_alpasim.driver import DEFAULT_HORIZON_S
+
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=CAMERAS, output_frequency_hz=10)
+    assert d._horizon_steps == round(DEFAULT_HORIZON_S * 10)
+    xy = d._rollout(initial_speed=5.0)
+    assert xy.shape == (round(DEFAULT_HORIZON_S * 10), 2)
+    # 3 s of trajectory covers the 2.0 s MPC horizon.
+    assert d._horizon_steps / 10 >= 2.0
+
+
+def test_rollout_honors_a_horizon_override():
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=CAMERAS, output_frequency_hz=10)
+    assert d._rollout(initial_speed=5.0, horizon_steps=25).shape == (25, 2)
+
+
 def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     driver = ShieldedDriver.from_config(
         model_cfg=None, device="cpu", camera_ids=CAMERAS, context_length=None, output_frequency_hz=4

@@ -58,6 +58,16 @@ logger = logging.getLogger(__name__)
 # The env var naming the inner policy to shield. Unset -> coasting baseline (see module docs).
 INNER_MODEL_ENV_VAR = "SHIELD_INNER_MODEL"
 
+# Seconds of trajectory to emit. This MUST cover the controller's MPC horizon, which is
+# `n_horizon * dt_mpc = 20 * 0.1 = 2.0 s` (alpasim_controller `mpc_controller.py`,
+# `controller/default.yaml`). The MPC *clamps* horizon timestamps to the reference's time
+# range (`linear_mpc.py:_interpolate_reference`), so any horizon step past the end of our
+# trajectory tracks our LAST waypoint — a stationary target the MPC then brakes to a stop at.
+# The original 6-waypoint (~0.6 s) output undershot this and made the car halt ~2 m in; both
+# the coast and VaVAM runs died at ~8 m for exactly this reason. 3.0 s clears 2.0 s with margin
+# (matches the route `horizon_s: 3.0` in base_config.yaml).
+DEFAULT_HORIZON_S = 3.0
+
 # A field with no obstacles reports every point infinitely clear, so the shield never
 # intervenes. Used when no scene artifact is configured, and as the per-call fallback when
 # the ego pose history has not arrived yet.
@@ -122,7 +132,8 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         camera_ids: list[str],
         context_length: int = 1,
         output_frequency_hz: int = 2,
-        horizon_steps: int = 6,
+        horizon_steps: int | None = None,
+        horizon_s: float = DEFAULT_HORIZON_S,
         obstacles=None,
         scene_source: SceneObstacleSource | None = None,
         inner_model=None,
@@ -131,7 +142,13 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         self._camera_ids = list(camera_ids)
         self._context_length = context_length
         self._output_frequency_hz = output_frequency_hz
-        self._horizon_steps = horizon_steps
+        # Emit enough waypoints to span `horizon_s` at the output rate, so the trajectory
+        # covers the MPC horizon (see DEFAULT_HORIZON_S). An explicit `horizon_steps` still
+        # wins (tests, previews); None derives it from the rate.
+        self._horizon_steps = (
+            horizon_steps if horizon_steps is not None
+            else max(2, round(horizon_s * output_frequency_hz))
+        )
         # A fixed field, for tests and for `scripts/preview_trajectory.py`. Ignored when a
         # `scene_source` is present, since that resamples per call as actors move.
         self._obstacles = EMPTY_FIELD if obstacles is None else obstacles
@@ -224,15 +241,18 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         ego_xy, ego_yaw, timestamp_us = ego
         return self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
 
-    def _rollout(self, initial_speed: float, obstacles=None, policy=None) -> np.ndarray:
+    def _rollout(self, initial_speed: float, obstacles=None, policy=None,
+                 horizon_steps: int | None = None) -> np.ndarray:
         """Roll `policy` through the shield for `horizon_steps`, return `(T, 2)` xy.
 
         `policy(state) -> (accel, steer)`; defaults to `_coast` (go straight, hold speed), the
-        baseline the shield filters when no inner model is configured. Kept free of AlpaSim
-        types so it's testable without AlpaSim/torch installed.
+        baseline the shield filters when no inner model is configured. `horizon_steps` defaults
+        to `self._horizon_steps` (sized to span the MPC horizon, see DEFAULT_HORIZON_S). Kept
+        free of AlpaSim types so it's testable without AlpaSim/torch installed.
         """
         obstacles = self._obstacles if obstacles is None else obstacles
         policy = _coast if policy is None else policy
+        horizon_steps = self._horizon_steps if horizon_steps is None else horizon_steps
         # Waypoints are ego-relative in the rig frame, so the rollout always starts at the
         # origin. Initial steer is assumed centred: AlpaSim's `PredictionInput` carries no
         # road-wheel angle (`ego_pose_history` could be differenced for it — refinement,
@@ -242,7 +262,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # shield (and its braking lookahead) always runs at its own tested integration rate,
         # regardless of what output_frequency_hz AlpaSim asks for.
         substeps_per_waypoint = max(1, round(1.0 / self._output_frequency_hz / self._cfg.dt))
-        n_steps = self._horizon_steps * substeps_per_waypoint
+        n_steps = horizon_steps * substeps_per_waypoint
 
         # Snapshot the situation *before* the shield acts, so the log distinguishes "blocked
         # ahead" (shield doing its job) from "braking for a rear/side actor" (over-conservative).
@@ -254,13 +274,14 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # inner policy. One line per cycle (runs are short) so a run's driver log is a full
         # trace of proposed-vs-shielded and what the shield was reacting to.
         diag.update(
+            horizon_s=round(horizon_steps / self._output_frequency_hz, 2),
             n_interventions=stats["n_interventions"],
             final_speed=round(float(stats["final_speed"]), 2),
             collided=stats["collided"],
         )
         logger.info("shield cycle %s", diag)
-        xy = np.zeros((self._horizon_steps, 2))
-        for t in range(self._horizon_steps):
+        xy = np.zeros((horizon_steps, 2))
+        for t in range(horizon_steps):
             # states[0] is the initial state, so waypoint t lands substeps*(t+1) steps in.
             # shielded_rollout truncates on collision; clamping holds the last pose so the
             # trajectory stays the fixed length AlpaSim expects.
@@ -285,12 +306,16 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
         proposed = self._proposed_waypoints(prediction_input)
         policy = None
+        horizon_steps = self._horizon_steps
         if proposed is not None:
             # Track the inner plan at its own output cadence; the shield then filters the
             # per-step commands the tracker produces.
             policy = make_tracking_policy(proposed, 1.0 / self._output_frequency_hz, self._cfg)
+            # Emit at least the inner model's own horizon as well as the MPC's: a shorter
+            # output would be clamped to its endpoint by the MPC and braked to a stop there.
+            horizon_steps = max(self._horizon_steps, len(proposed))
 
-        xy = self._rollout(prediction_input.speed, obstacles, policy)
+        xy = self._rollout(prediction_input.speed, obstacles, policy, horizon_steps)
         # The shield plans in the ground plane; `from_planar` lifts (T, 2) + headings into
         # the (K, T, 3) / (K, T, 3, 3) pose pair `ModelPrediction` actually holds.
         return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
