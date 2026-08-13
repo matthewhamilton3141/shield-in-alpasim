@@ -4,11 +4,6 @@
 # CPU-only and cheap: the shield is a bounded search over accel/steer candidates, not a
 # network forward pass, so it needs no GPU and its control loop can run fast.
 
-wizard:
-  external_services:
-    driver:
-      - "localhost:6789"
-
 runtime:
   simulation_config:
     force_gt_duration_us: 3_000_000  # 3 s of ground-truth replay before the driver takes over

@@ -34,7 +34,13 @@ class FakePose:
 
 
 class FakeTrajectory:
-    """One pose held over `[start_us, end_us]` — enough for a pose lookup at a timestamp."""
+    """One pose held over `[start_us, end_us)` — enough for a pose lookup at a timestamp.
+
+    The range is half-open to match AlpaSim's real `Trajectory.interpolate_pose`, which
+    rejects a query at exactly `end_us` (`ValueError: ... outside range [start, end)`). An
+    earlier version of this fake used an inclusive bound and so silently accepted the one
+    query the real type throws on — the end-of-track boundary.
+    """
 
     def __init__(self, pose, start_us, end_us):
         self._pose, self._start, self._end = pose, start_us, end_us
@@ -43,7 +49,7 @@ class FakeTrajectory:
         return (self._start, self._end)
 
     def interpolate_pose(self, at_us):
-        assert self._start <= at_us <= self._end, "glue must clamp before interpolating"
+        assert self._start <= at_us < self._end, "glue must clamp into [start, end)"
         return self._pose
 
 

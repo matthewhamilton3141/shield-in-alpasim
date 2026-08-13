@@ -180,8 +180,15 @@ def field_from_traffic_objects(
         if start_us == 0 and end_us == 0:                      # empty track
             continue
 
-        at_us = min(max(int(timestamp_us), int(start_us)), int(end_us))
-        if at_us != int(timestamp_us) and not obj.is_static:
+        # interpolate_pose treats the track as half-open [start_us, end_us): a query at
+        # exactly end_us is out of range. Static actors have a constant pose, so clamp them
+        # onto the track; a moving actor is dropped unless its track actually covers `now`.
+        t, s, e = int(timestamp_us), int(start_us), int(end_us)
+        if obj.is_static:
+            at_us = s if e <= s else min(max(t, s), e - 1)
+        elif s <= t < e:
+            at_us = t
+        else:
             continue
 
         pose = trajectory.interpolate_pose(at_us)
