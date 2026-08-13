@@ -5,6 +5,49 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ★★ THE EXPERIMENT — 5-scene unshielded-vs-shielded sweep (2026-08-13)
+
+`scripts/scene_sweep.sh` over the first 5 sample scenes, one rollout each, VaVAM-S ±shield:
+
+| scene (clipgt-…) | arm | at-fault | rear | progress | status |
+|---|---|---|---|---|---|
+| 01d503d4 | unshielded | **1** | 0 | 0.815 | **fail** |
+| 01d503d4 | shielded | **0** | 0 | 1.00 | pass |
+| 023b7fcc | unshielded | 0 | 0 | 0.99 | pass |
+| 023b7fcc | shielded | 0 | 0 | 0.97 | pass |
+| 0245ff75 | unshielded | 0 | 1 | 0.51 | pass |
+| 0245ff75 | shielded | 0 | 1 | 0.41 | pass |
+| 026d6a39 | unshielded | 0 | 0 | **1.00** | pass |
+| 026d6a39 | shielded | 0 | 0 | **0.45** | pass |
+| 02e075b9 | unshielded | 0 | 0 | 1.00 | pass |
+| 02e075b9 | shielded | 0 | 0 | 1.00 | pass |
+
+**The trade-off, quantified:** at-fault collisions **1 → 0** (scene 01d503d4: the shield caught
+a crash VaVAM drove into); mean progress **0.86 → 0.77 (≈ −11 %)**. The progress cost is
+**concentrated, not uniform** — near-free on 023b7fcc/02e075b9, but the shield **halved**
+progress on 026d6a39 (1.00 → 0.45) by over-braking. That is exactly **finding 2** (omnidirectional
+`can_stop_safely` freezing for rear/side actors) showing up as a measurable cost — now with a
+scene number to reproduce it on. Rear collisions are unchanged (0245ff75: both rear-ended; the
+shield can't avoid those and pays progress for the surround traffic).
+
+**The clean story:** the hard shield **eliminates at-fault collisions** — its guarantee — at a
+bounded, mostly-modest progress cost, with the tail cost traceable to a specific,
+already-diagnosed over-conservatism. That is a real result.
+
+**⚠ Caveat — run-to-run variance.** Scene 01d503d4 *unshielded* crashed here but scored 1.0 in
+the earlier standalone run, so VaVAM is stochastic across runs (GPU inference / seed). Shielded
+passed 01d503d4 **both** times — i.e. the shield also *bounds the worst case*. But single-rollout
+numbers are noisy: the rigorous version is `runtime.simulation_config.n_rollouts>1` (average out
+VaVAM's variance) over more scenes. This 5-scene / 1-rollout sweep is a strong signal, not a
+final number. `~/sweep_results.csv` holds the raw rows on the box.
+
+**Next:** (1) re-run with `n_rollouts=3–5` on more scenes for statistics; (2) implement the
+finding-2 fix (drop rear/outside-corridor discs) and re-sweep — the hypothesis is it recovers
+the 026d6a39-style progress loss without re-introducing at-fault collisions. That fix's
+before/after on this sweep is the natural next result.
+
+---
+
 ## ▶ Unshielded-vs-shielded comparison, scene 23dd34ea (2026-08-13)
 
 Ran `driver=vavam` (unshielded, same VaVAM-S width_768 checkpoint via
