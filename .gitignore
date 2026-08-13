@@ -17,3 +17,5 @@ outputs/
 
 # Local render artifacts pulled from the box
 out_first_result/
+
+out_fix_result/

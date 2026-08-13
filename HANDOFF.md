@@ -5,6 +5,42 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ★ IT DRIVES — shielded VaVAM, full route, zero collisions, score 1.0 (2026-08-13)
+
+The horizon fix landed and the confirming render is unambiguous. `driver=shielded_vavam` on
+scene 23dd34ea, armed:
+
+| | coast (out_first) | vavam pre-fix (out_vavam) | **vavam + fix (out_fix)** |
+|---|---|---|---|
+| dist_traveled_m | 8.07 | 8.17 | **77.9** (gt 73.8) |
+| collision_at_fault | 0 | 0 | **0** |
+| collision_rear | 1 | 1 | **0** |
+| offroad | 0 | 0 | **0** |
+| progress_clipped_rel | 0.11 | 0.11 | **1.0** |
+| score / status | 0.137 | 0.138 | **1.0 / pass** |
+
+The car drives the whole scene (slightly past the human's distance), **zero collisions of any
+kind**, perfect score. And **the shield is genuinely active while it drives** — the early
+`shield cycle` logs show `n_interventions` 6/5/4/3/2 as it trims VaVAM's full-throttle command
+in dense traffic, `horizon_s: 3.0`, `final_speed` climbing 8→ instead of collapsing to 0.
+
+This is the first real result: a learned policy (VaVAM) driving under the hard shield, and the
+shield vetoing where needed without wrecking the drive. Video pulled to `out_fix_result/`.
+
+**What it means for the earlier findings:** the ~8 m stall was 100% the short-trajectory bug,
+in *both* arms. The "shield over-conservative for rear actors" (finding 2) never fired here —
+because a car that keeps pace with traffic is never the stationary sitting duck that gets
+rear-ended. Finding 2 may still matter in a scene that genuinely blocks the ego; keep the
+diagnostic (ahead-vs-behind) around to catch it.
+
+**Next (the actual experiment now that it drives):** (1) run more scenes (`limit_to_first_n`
+> 1) — one perfect scene isn't a result; (2) compare against **unshielded VaVAM** (`driver=vavam`)
+on the same scenes to measure what the shield changed (interventions, collisions avoided vs
+progress lost); (3) then the degradation experiment (GT geometry → learned perception). The
+branch `phase3-container-wiring` (13 commits) is still local — consider pushing / PR.
+
+---
+
 ## ✔✔✔ ROOT CAUSE FOUND + FIXED (2026-08-13) — the trajectory was too short
 
 **Neither the shield nor the policy was the problem — our emitted trajectory was too short.**
