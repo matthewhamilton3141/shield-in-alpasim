@@ -5,6 +5,44 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ⊘ Rear-filter A/B — NEGATIVE result, and the real cause of the progress cost (2026-08-13)
+
+Implemented the finding-2 fix (`forward_relevant_field`, drop obstacle discs entirely behind
+the ego's rear bumper; committed, `SHIELD_REAR_FILTER` toggle, 50 tests) and A/B'd it
+(`scripts/shield_rear_ab.sh`, filter off vs on, both shielded, same session):
+
+| scene | progress OFF | progress ON |
+|---|---|---|
+| 01d503d4 | 1.00 | 1.00 |
+| 023b7fcc | 0.968 | 0.971 |
+| 0245ff75 | 0.41 | 0.41 |
+| **026d6a39** | **0.41** | **0.41** |
+| 02e075b9 | 1.00 | 1.00 |
+
+**The rear filter is essentially a no-op — my finding-2 hypothesis was WRONG.** The shielded
+progress loss on 026d6a39 is not over-conservative rear braking. Its per-cycle diagnostics show
+the car reaching **15 m/s (max speed) with mostly 0 interventions** — not frozen at all. The
+real cause: **route deviation truncates the eval.** `dist_to_gt_trajectory` crosses the 4 m
+cutoff (`RemoveTimestepsAfterEvent`), and the shielded car crosses it *early* (`plan_deviation`
+**4.36** vs unshielded **2.41**), so progress truncates at 41 %; unshielded stays on-route to
+100 % and only drifts at the very end. **Our pure-pursuit tracker re-rolls VaVAM's plan with
+lateral error, and on curvier routes that error walks the car off the logged path.** The rear
+filter is still sound and harmless (kept, default on), just aimed at the wrong problem.
+
+**The right fix (next):** **pass VaVAM's raw trajectory through unchanged when the shield does
+not intervene** (`n_interventions == 0`), and only emit our re-rolled/braked trajectory when it
+does. Most cycles on 026d6a39 are un-intervened, so today we degrade VaVAM's path for no safety
+reason. Passthrough should recover the lost progress (match unshielded path fidelity) while
+keeping the shield's veto where it matters. Soundness note to work out: we currently *certify*
+the tracked commands, not VaVAM's raw waypoints — so passthrough should either (a) only trigger
+when the raw path's footprint is also clear (a cheap geometric check), or (b) accept that an
+un-intervened cycle means both are safe-enough. Design before coding.
+
+Also seen (single-rollout, noisy): 0245ff75 flipped at-fault(off)→rear(on) at identical
+distance — within VaVAM variance, don't over-read. The rigorous re-run is `n_rollouts>1`.
+
+---
+
 ## ★★ THE EXPERIMENT — 5-scene unshielded-vs-shielded sweep (2026-08-13)
 
 `scripts/scene_sweep.sh` over the first 5 sample scenes, one rollout each, VaVAM-S ±shield:
