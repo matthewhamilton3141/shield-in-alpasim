@@ -147,23 +147,41 @@ Decisions worth knowing:
 Sanity check, not vacuous: from 12 m/s at an actor 30 m ahead, an empty field runs the nose
 to 75.8 m; this field stops it at 26.30 m, with the actor's face at 27.75 m.
 
-### ⚠ The wiring gap: `predict()` cannot reach this yet
+### ✔ Wired: `scene.py`, via an environment variable
 
-`PredictionInput` has no scene id and no timestamp, and `BaseTrajectoryModel` has **no
-session hook** — the servicer keeps `debug_scene_id` on its own `Session`
-(`driver/main.py:174,218`) and never passes it to the model. So the driver cannot ask "which
-scene am I in?" through the sanctioned interface. Two ways out, unresolved:
+`predict()` now builds a live field. `SHIELD_SCENE_USDZ` names the scene artifact; unset
+means an empty field and the old inert coasting, because a driver that refuses to start is
+worse on a metered box than one that does nothing. A path that is set but wrong raises —
+that case means the run was *meant* to have geometry, and silently not having it is
+indistinguishable from a shield that never fires.
 
-- **(a) Config-level scene path.** Add the artifact path to `configs/driver/shielded.yaml`,
-  load `traffic_objects` once in `from_config`. No fork. One scene per run — which is all
-  the baseline arm needs at first. Timestamp can come off the newest `CameraFrame`, and ego
-  pose off the last entry of `ego_pose_history`.
-- **(b) Fork `main.py`** to put `scene_id` (and a timestamp) on `PredictionInput`. Honest
-  about what it is — the privileged channel, made explicit — and it scales to multi-scene
-  runs, but it is a patch against upstream to carry.
+**Why an env var and not config.** The config route does not work. The driver merges its
+YAML onto a structured `DriverConfig` (`driver/main.py:1189`), so OmegaConf is in struct
+mode and an unknown key under `model:` raises rather than passing through — adding one means
+forking AlpaSim's schema. And the driver cannot discover the scene itself: `PredictionInput`
+has no scene id, `BaseTrajectoryModel` has no session hook, and the servicer keeps
+`debug_scene_id` to itself (`main.py:174,218`). The wizard already supports an
+`environments` list on every service (see `trafficsim/catk.yaml`), so the path rides that.
 
-Start with (a); it is reversible and unblocks a first result. Neither is verifiable from the
-Mac.
+Ego pose and timestamp come off the last entry of `ego_pose_history` — gRPC `PoseAtTime`,
+newest last, kept sorted by the servicer (`main.py:335`).
+
+### ⚠ Caught while wiring: the shield was shielding the wrong car
+
+kitti-nav's `VehicleConfig` is a VW Passat (4.77 x 1.82 m, 0.97 m rear overhang) because
+that is what recorded KITTI. **AlpaSim's default ego is a Mercedes S223 — 5.393 x 2.109 m,
+1.3 m overhang** (`alpasim_utils/scenario.py:26`), and runtime collides against *that*
+(`unbound_rollout.py:294`). Unfixed, the shield would have certified a footprint ~0.6 m
+short and ~0.3 m narrow of the real body: optimistic in the exact direction a safety
+envelope must never be, and it would have shown up as unexplained collisions in a run that
+looked otherwise correct.
+
+`ego_config_from_rig` now takes the geometry from the scene's own rig config. Only geometry
+— AlpaSim's `VehicleConfig` has no steering or brake model to copy. **Known remaining gap:**
+wheelbase stays kitti-nav's 2.71 m against the S223's ~3.11 m, so the bicycle model turns
+slightly tighter than the real car. That affects the swept path, not the straight-line
+braking distance the certificate mostly rests on, but it is a real approximation and should
+be closed if the shield ever certifies turning manoeuvres.
 
 ## The remaining open problem
 
@@ -183,40 +201,54 @@ section above, the ground-truth arm is confirmed buildable, so this is no longer
 
 ## ▶ Next step
 
-Two tracks, and the first no longer needs a GPU.
+**Everything that can be done off a GPU is done.** The remaining work needs a box.
 
-**On the Mac:** pick (a) or (b) for the wiring gap above and connect `obstacles.py` to
-`predict()`. The geometry itself is done and tested; what is missing is only how the driver
-learns which scene it is in. Everything downstream of that call is already exercised.
+Full plan, instance sizing, cost model and the phased command sequence now live in
+[`docs/BOX_SETUP.md`](docs/BOX_SETUP.md). The short version:
 
-**Plan step 2, on a rented box:** get AlpaSim running against a bundled sample scene with
-the inert driver. Proves entry points, Hydra config, `camera_ids`, and `context_length`
-before any shield logic is real. Cannot be done from the Mac.
+- **Two things to start immediately**, because they have multi-hour-to-multi-day lead times
+  and block everything: request the gated HF dataset
+  (`nvidia/PhysicalAI-Autonomous-Vehicles-NuRec`), and request an **AWS GPU quota increase**
+  (new accounts are capped at 0 vCPUs for G-family instances).
+- **$100 of AWS credits covers this comfortably.** `g6e.xlarge` (L40S, 48 GB) at roughly
+  $1.86/hr is ~53 hours — against a bring-up that should take a handful. AWS has no
+  single-A100 instance, so the earlier Brev A100 plan does not port; 48 GB simply removes
+  the "is 40 GB enough" question we never answered. `g5.xlarge` (24 GB, ~$1.01/hr) is the
+  fallback if the g6e quota is refused.
+- **Order of operations on the box is the whole point:** `scripts/preflight.sh` →
+  `wizard.run_method=NONE` (generates configs and fetches artifacts *without simulating*) →
+  `scripts/check_scene_geometry.py` → only then a rendered run.
 
-Sizing, from AlpaSim's own docs: **A100 40GB is the pick** (Brev, ~$1.10/hr; their H100 at
-$1.99 is the upgrade if 40 GB is tight — their A100 80GB at $6.21 is not). Our driver uses
-**zero VRAM** (`gpus: null`, `device: cpu`), so the budget is renderer + physics +
-trafficsim only. ~200 GB disk. Bring-up is ~$10; realistic cost is hours of setup, not
-compute. Note the 48/96 GB figures in `docs/ONBOARDING.md` are for the *optional*
-FlashDreams renderer, not the default NuRec path.
-
-**Do before starting the meter:** request access to the gated HF dataset
-(`nvidia/PhysicalAI-Autonomous-Vehicles-NuRec`) — approval is not instant, and scene
-downloads fail with `GatedRepoError` without it. Pick an image with driver ≥ 570.x (the NRE
-container is CUDA 12.8; too-old drivers fail with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`).
-Skip `download_vavam_assets.sh` unless wrapping VaVAM — this driver has no checkpoint.
+`check_scene_geometry.py` is the one to run first and the one most likely to catch a real
+bug: it replays the scene's **logged human drive** against the scene's **logged actors** and
+asserts the ego never collides. A real drive did not crash, so a collision means our
+geometry is wrong — frames, quaternion convention, or ego footprint. Pure CPU, no renderer,
+no cost.
 
 ## ▶ Runbook
 
 ```bash
-python3 -m pytest -q                      # 4 tests, no AlpaSim/GPU
+python3 -m pytest -q                      # 32 tests, no AlpaSim/GPU
 python3 scripts/preview_trajectory.py     # -> docs/preview.png
 python3 scripts/preview_trajectory.py --speed 14 --obstacle-x 18 --hz 4
 
-# on a box with AlpaSim:
-uv pip install -e path/to/shield-in-alpasim
+# on a box with AlpaSim (see docs/BOX_SETUP.md for the full sequence):
+cd ~/alpasim && uv pip install -e ~/shield-in-alpasim --no-deps
 uv run alpasim-info                       # expect `shielded` under alpasim.models
+./scripts/preflight.sh                    # ordered cheapest-failure-first
 uv run alpasim_wizard deploy=local topology=1gpu driver=shielded wizard.log_dir=$PWD/out
+```
+
+**`--no-deps` is required.** Our `alpasim_*` dependencies are workspace packages that do not
+exist on PyPI; AlpaSim's in-tree plugins resolve them via `[tool.uv.sources]`, but we are an
+out-of-tree checkout, so a plain install goes to PyPI and fails. `uv sync --extra all` has
+already provided them.
+
+To actually arm the shield, the driver container needs the scene path — inside the
+container, not on the host:
+
+```bash
+    services.driver.environments='["SHIELD_SCENE_USDZ=/mnt/nre-data/<sceneset>/<scene>.usdz"]'
 ```
 
 The wizard defaults to `trafficsim: disabled`, which is what the ground-truth arm wants —
@@ -224,9 +256,11 @@ leave it alone rather than passing `trafficsim=catk`, or the on-disk geometry st
 the sim (see "Settled" above).
 
 `preview_trajectory.py` injects an obstacle by hand to show the shield braking (stops at
-15.8 m, obstacle surface at 20.5 m). Until the obstacle adapter lands the field is empty
-under AlpaSim, so a real run today shows a car driving straight and a shield that never
-fires — that is expected, not a bug.
+15.8 m, obstacle surface at 20.5 m). With `SHIELD_SCENE_USDZ` unset the field under AlpaSim
+is empty, so the car drives straight and the shield never fires — the designed fallback, not
+a bug. **Check the driver log for `Loaded N scene actors`** before believing any
+"no interventions" result: a shield with no geometry looks exactly like a shield with
+nothing to avoid.
 
 Videos come from AlpaSim's eval stage: `eval.video.video_layouts=[DEFAULT]` renders BEV +
 camera + metrics per rollout, and output sorts clips into `collision_at_fault/`, `offroad/`.

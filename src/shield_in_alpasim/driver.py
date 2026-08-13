@@ -1,15 +1,18 @@
 """AlpaSim driver plugin wrapping kitti-nav's hard safety shield.
 
-SCAFFOLD — the shield runs, but against an empty obstacle field. See ../../README.md
-"The actual gap" before extending this.
-
 AlpaSim's `BaseTrajectoryModel.predict()` gets camera frames in and must return waypoint
 poses out; kitti-nav's shield takes a per-step `(accel_cmd, steer_cmd)` in and an
 `ObstacleField` to check against, and returns a certified-safe `(accel, steer)` out.
-Problem 1 (README) is not bridged here yet — `predict()` below runs the shield against an
-empty `ObstacleField`, so the plugin loads and returns a straight-line trajectory. That is
-enough to prove the AlpaSim harness plumbing (entry point, Hydra config, camera_ids,
-context_length) without either open problem being solved.
+
+Obstacles are real now: with `$SHIELD_SCENE_USDZ` set, `predict()` samples the scene's
+actors at the current ego pose and timestamp (`scene.py`, `obstacles.py`) and the shield
+brakes for them. Unset, the field is empty and the car coasts — the old scaffold behaviour,
+kept as the fallback because a driver that refuses to start is worse on a metered box.
+
+**Still missing a policy.** `_rollout` commands `(0.0, 0.0)`, so this drives straight and
+holds speed until the shield vetoes. The shield is a filter: it certifies a proposed action
+and never proposes one, so nothing here self-drives until a policy is wired upstream. See
+HANDOFF.md, "Open decision".
 
 Provenance: the shield itself is not implemented here — it's imported from `kitti_nav`,
 see ATTRIBUTION.md.
@@ -35,12 +38,11 @@ except ImportError:  # AlpaSim isn't installed (e.g. on a Mac dev box, no GPU st
     BaseTrajectoryModel = object  # type: ignore[assignment,misc]
 
 from kitti_nav.vehicle import CircleField, VehicleConfig, VehicleState, shielded_rollout
+from shield_in_alpasim.scene import SceneObstacleSource, ego_pose_from_history
 
-# Placeholder for problem 1 (README: "where does the shield's obstacle field come from?").
 # A field with no obstacles reports every point infinitely clear, so the shield never
-# intervenes — `CircleField(None)` already is exactly that, so there is nothing to write
-# here. Replaced by a field synthesized from AlpaSim's camera frames (or from privileged
-# scene geometry, if AlpaSim exposes any) once problem 1 is solved.
+# intervenes. Used when no scene artifact is configured, and as the per-call fallback when
+# the ego pose history has not arrived yet.
 EMPTY_FIELD = CircleField(None)
 
 
@@ -59,27 +61,41 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         output_frequency_hz: int = 2,
         horizon_steps: int = 6,
         obstacles=None,
+        scene_source: SceneObstacleSource | None = None,
     ):
         self._cfg = cfg
         self._camera_ids = list(camera_ids)
         self._context_length = context_length
         self._output_frequency_hz = output_frequency_hz
         self._horizon_steps = horizon_steps
-        # `obstacles` is the seam problem 1 plugs into: any kitti-nav ObstacleField. It
-        # stays empty under AlpaSim (nothing synthesizes one from camera frames yet), but
-        # injecting a real field is what `scripts/preview_trajectory.py` does to show the
-        # shield actually intervening.
+        # A fixed field, for tests and for `scripts/preview_trajectory.py`. Ignored when a
+        # `scene_source` is present, since that resamples per call as actors move.
         self._obstacles = EMPTY_FIELD if obstacles is None else obstacles
+        self._scene_source = scene_source
 
     @classmethod
     def from_config(cls, model_cfg, device, camera_ids, context_length, output_frequency_hz):
         # `device` is ignored on purpose — the shield is numpy, there is nothing to move
         # onto a GPU. `context_length` is None when the config leaves it to the model.
+        #
+        # The scene path comes from the environment, not `model_cfg`: the driver merges its
+        # YAML onto a structured `DriverConfig` in struct mode, so an extra key here would
+        # raise. See `scene.py` for the full reasoning.
+        scene_source = SceneObstacleSource.from_env()
+
+        # Take the ego's real dimensions from the scene when we have them. kitti-nav's
+        # defaults are a VW Passat; AlpaSim's ego is a much larger S223, and shielding the
+        # wrong footprint is optimistic in exactly the direction that matters.
+        cfg = VehicleConfig()
+        if scene_source is not None and scene_source.ego_vehicle_config is not None:
+            cfg = scene_source.ego_vehicle_config
+
         return cls(
-            cfg=VehicleConfig(),
+            cfg=cfg,
             camera_ids=camera_ids,
             context_length=context_length or 1,
             output_frequency_hz=output_frequency_hz,
+            scene_source=scene_source,
         )
 
     def _encode_command(self, command: "DriveCommand") -> int:
@@ -88,7 +104,25 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # DriveCommand is an IntEnum, so this is its own encoding.
         return int(command)
 
-    def _rollout(self, initial_speed: float) -> np.ndarray:
+    def _obstacles_for(self, prediction_input) -> "CircleField":
+        """Obstacle field for this inference: scene actors if configured, else the fixed one.
+
+        Falls back to the fixed field when the ego pose history is empty, which happens on
+        the first query of a session before any pose has been reported. An empty field is
+        the safe direction to fail here only because the car is still under ground-truth
+        replay at that point (`force_gt_duration_us`); it is not yet driving on the shield.
+        """
+        if self._scene_source is None:
+            return self._obstacles
+
+        ego = ego_pose_from_history(prediction_input.ego_pose_history)
+        if ego is None:
+            return self._obstacles
+
+        ego_xy, ego_yaw, timestamp_us = ego
+        return self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
+
+    def _rollout(self, initial_speed: float, obstacles=None) -> np.ndarray:
         """Roll the shield forward open-loop for `horizon_steps`, return `(T, 2)` xy.
 
         Placeholder policy: commands "go straight, hold speed." Real use replaces this
@@ -96,6 +130,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         shield's job is to filter it, not propose it. Kept free of AlpaSim types so it's
         testable without AlpaSim/torch installed.
         """
+        obstacles = self._obstacles if obstacles is None else obstacles
         # Waypoints are ego-relative in the rig frame, so the rollout always starts at the
         # origin. Initial steer is assumed centred: AlpaSim's `PredictionInput` carries no
         # road-wheel angle (`ego_pose_history` could be differenced for it — refinement,
@@ -108,7 +143,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         states, _stats = shielded_rollout(
             lambda _state: (0.0, 0.0),
             state,
-            self._obstacles,
+            obstacles,
             self._cfg,
             n_steps=self._horizon_steps * substeps_per_waypoint,
         )
@@ -122,7 +157,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
     def predict(self, prediction_input: "PredictionInput") -> "ModelPrediction":
         self._validate_cameras(prediction_input.camera_images)
-        xy = self._rollout(prediction_input.speed)
+        xy = self._rollout(prediction_input.speed, self._obstacles_for(prediction_input))
         # The shield plans in the ground plane; `from_planar` lifts (T, 2) + headings into
         # the (K, T, 3) / (K, T, 3, 3) pose pair `ModelPrediction` actually holds.
         return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
