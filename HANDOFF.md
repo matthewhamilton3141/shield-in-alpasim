@@ -24,10 +24,17 @@ This session built the fix: `ShieldedDriver` is now a **decorator** over any reg
   inner model's). Shield `n_interventions` is now logged per call — the experiment's signal.
 - **43 tests green** (was 32; +8 `control`, +3 `driver` via a fake inner model). `predict()`
   itself stays box-verified per repo discipline. Preview script unchanged (still coasts).
-- **Not yet done (needs the box + a checkpoint):** a `driver=shielded_transfuser` config that
-  sets Transfuser's 4 cameras + `extra_cameras` + checkpoint and `SHIELD_INNER_MODEL=transfuser`.
-  Is `/mnt/drivers/transfuser/model_0060.pth` on the box? Unverified. That config + a render
-  is the next box session — then compare intervention counts and collisions vs the coast run.
+- **Config built (2026-08-13, off-meter):** `driver=shielded_transfuser`
+  (`configs/driver/shielded_transfuser.yaml` + `_configs`) sets Transfuser's 4 cameras +
+  `extra_cameras` (inlined so it doesn't depend on transfuser's config package on the search
+  path), `SHIELD_INNER_MODEL=transfuser`, the checkpoint path, and the driver-container wiring
+  **with the GPU on** (Transfuser needs it). The command prefix editable-installs both the
+  shield and transfuser (the base image's `uv sync --extra all` omits the `transfuser` extra,
+  so its entry point isn't baked in).
+- **Still needs the box:** (1) confirm Transfuser's Python deps (timm/beartype/jaxtyping) are
+  in the image — if not, rebuild with `--extra transfuser`; (2) confirm the checkpoint
+  `/mnt/drivers/transfuser/model_0060.pth` exists (fetch if not); (3) render and **compare
+  intervention counts + collisions vs the coast run**. That comparison is the payoff.
 
 ---
 

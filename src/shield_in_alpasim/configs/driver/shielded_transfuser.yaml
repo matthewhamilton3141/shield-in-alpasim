@@ -1,0 +1,66 @@
+# driver=shielded_transfuser — kitti-nav's shield wrapping AlpaSim's Transfuser.
+#
+# ShieldedDriver is the model AlpaSim loads (`model_type: shielded`). At from_config it reads
+# $SHIELD_INNER_MODEL=transfuser (set in shielded_transfuser_configs.yaml) and builds
+# Transfuser as its inner policy, reusing *this* config's model.* — so `checkpoint_path`,
+# `device` and `use_cameras` below are Transfuser's. Each predict(): Transfuser proposes a
+# plan, control.py tracks it into (accel, steer), the shield certifies it. The shield's
+# n_interventions (logged) is the experiment's signal — how often it had to override the net.
+#
+# ── Box prerequisites (verify before a metered render) ──────────────────────────────────
+#   1. Transfuser registered in the driver container. The base image's `uv sync --extra all`
+#      does NOT include the `transfuser` extra, so the command prefix editable-installs it.
+#      That needs its Python deps (timm/beartype/jaxtyping) already in the venv; if the driver
+#      log shows ModuleNotFoundError for one of those, rebuild the base image with
+#      `--extra transfuser` (or add transfuser to the `all` extra) and drop the transfuser
+#      install line from shielded_transfuser_configs.yaml.
+#   2. The checkpoint at /mnt/drivers/transfuser/model_0060.pth (host: ${defines.drivers}/
+#      transfuser/…). If absent, fetch it to data/drivers/transfuser/ first.
+#   3. Arm the shield as usual: export SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/
+#      <scene>.usdz on the host before the wizard run. Unset → the shield still filters
+#      Transfuser but against an empty field, so it can only ever agree with it.
+# ────────────────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  - shielded_transfuser_configs   # Transfuser cameras + the driver-container wiring (global)
+  - _self_                        # values here win over the composed config
+
+log_level: ${wizard.log_level}
+
+model:
+  model_type: shielded            # the OUTER model is the shield; it wraps the inner one
+  # The INNER Transfuser's weights (config.json must sit alongside). The shield has none.
+  checkpoint_path: "/mnt/drivers/transfuser/model_0060.pth"
+  device: "cuda"                  # Transfuser runs on GPU; the shield ignores this
+
+host: "0.0.0.0"
+port: ???
+
+inference:
+  # Transfuser requires exactly these 4 cameras in this order (concatenated left→right). The
+  # shield validates the same set and hands the frames straight to the inner model.
+  use_cameras:
+    - "camera_cross_left_120fov"
+    - "camera_front_wide_120fov"
+    - "camera_cross_right_120fov"
+    - "camera_rear_left_70fov"
+  max_batch_size: 16
+  subsample_factor: 1
+  context_length: 1               # Transfuser is single-frame
+
+route:
+  # Transfuser consumes the route/command; the shield passes prediction_input through
+  # untouched, so mirror Transfuser's own route settings.
+  default_command: 2              # 0=right, 1=left, 2=straight
+  use_waypoint_commands: true
+  command_distance_threshold: 3.0
+  min_lookahead_distance: 20.0
+
+output_dir: "/mnt/output/driver"
+
+# Off: the shield's output is already certified against its own dynamics; re-smoothing it
+# downstream would invalidate that certificate.
+trajectory_optimizer:
+  enabled: false
+
+plot_debug_images: false
