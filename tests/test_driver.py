@@ -50,3 +50,61 @@ def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     assert driver.camera_ids == CAMERAS
     assert driver.output_frequency_hz == 4
     assert driver.context_length == 1  # None in config -> the model's own default
+
+
+# --- the decorator path: shielding an inner policy ---
+#
+# `predict()` itself stays untested here (it builds AlpaSim's ModelPrediction, uninstallable
+# on this box), but everything up to that boundary — pulling the inner plan, projecting it,
+# and rolling the tracked plan through the shield — is pure Python and tested below with a
+# fake inner model standing in for another BaseTrajectoryModel.
+
+
+class _FakePrediction:
+    def __init__(self, positions_xyz):
+        self.selected_positions = np.asarray(positions_xyz, dtype=float)
+
+
+class _FakeInner:
+    """Minimal stand-in for an inner BaseTrajectoryModel: returns a fixed plan."""
+
+    def __init__(self, waypoints_xy):
+        # Lift (T, 2) to the (T, 3) rig-frame positions a real ModelPrediction carries.
+        xyz = np.zeros((len(waypoints_xy), 3))
+        xyz[:, :2] = waypoints_xy
+        xyz[:, 2] = 1.7  # nonzero z, to prove the driver drops it to the ground plane
+        self._pred = _FakePrediction(xyz)
+
+    def predict(self, _prediction_input):
+        return self._pred
+
+
+def test_proposed_waypoints_is_none_when_coasting():
+    assert _driver()._proposed_waypoints(prediction_input=None) is None
+
+
+def test_proposed_waypoints_projects_inner_plan_to_the_ground_plane():
+    plan = np.array([[2.0, 0.0], [4.0, 1.0], [6.0, 2.0]])
+    driver = _driver(inner_model=_FakeInner(plan))
+    got = driver._proposed_waypoints(prediction_input=None)
+    assert got.shape == (3, 2)  # z dropped
+    assert np.allclose(got, plan)
+
+
+def test_shield_brakes_for_an_obstacle_the_inner_plan_drives_into():
+    # Inner plan: keep going straight. Obstacle dead ahead. The tracked-and-shielded rollout
+    # must stop short rather than reproduce the inner plan's march into the obstacle.
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.control import make_tracking_policy
+
+    plan = np.array([[4.0 * (i + 1), 0.0] for i in range(6)])
+    driver = _driver(inner_model=_FakeInner(plan), obstacles=CircleField(np.array([[18.0, 0.0, 1.0]])))
+    proposed = driver._proposed_waypoints(prediction_input=None)
+    policy = make_tracking_policy(proposed, 1.0 / driver.output_frequency_hz, VehicleConfig())
+
+    braked = driver._rollout(initial_speed=10.0, policy=policy)
+    coasting_into_it = driver._rollout(initial_speed=10.0, policy=None)  # coast also gets braked
+    # Either way the shield keeps the nose short of the obstacle surface (~17 m).
+    assert braked[-1, 0] < 17.0
+    assert coasting_into_it[-1, 0] < 17.0

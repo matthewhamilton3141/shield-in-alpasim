@@ -5,6 +5,32 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ▶▶▶ Session update — THE SHIELD CAN NOW WRAP A POLICY (2026-08-13, Mac, off-meter)
+
+The first render (below) confirmed empirically that the coasting shield is a sitting duck.
+This session built the fix: `ShieldedDriver` is now a **decorator** over any registered
+`alpasim.models` policy.
+
+- **New `control.py`** — the trajectory tracker that was "the remaining open problem": a
+  pure-pursuit lateral + speed-profile longitudinal controller that turns a proposed
+  waypoint plan into the per-step `(accel, steer)` the shield filters. Pure numpy, 8 unit
+  tests. This is the policy→command inversion, done as tracking (follow the plan as far as
+  the rate-limited bicycle allows, let the shield veto the rest) rather than analytic
+  inversion.
+- **`driver.py` wired**: `predict()` now calls the inner model, tracks its plan, and rolls it
+  through the shield; `$SHIELD_INNER_MODEL` (env, same pattern as `SHIELD_SCENE_USDZ`) names
+  the policy to wrap (e.g. `transfuser`). Unset → the coasting baseline, unchanged. The inner
+  model reuses this driver's `model_cfg` (so `checkpoint_path`/`device`/`use_cameras` are the
+  inner model's). Shield `n_interventions` is now logged per call — the experiment's signal.
+- **43 tests green** (was 32; +8 `control`, +3 `driver` via a fake inner model). `predict()`
+  itself stays box-verified per repo discipline. Preview script unchanged (still coasts).
+- **Not yet done (needs the box + a checkpoint):** a `driver=shielded_transfuser` config that
+  sets Transfuser's 4 cameras + `extra_cameras` + checkpoint and `SHIELD_INNER_MODEL=transfuser`.
+  Is `/mnt/drivers/transfuser/model_0060.pth` on the box? Unverified. That config + a render
+  is the next box session — then compare intervention counts and collisions vs the coast run.
+
+---
+
 ## ▶▶ Session update — FIRST RENDERED RUN (2026-08-13, later same day)
 
 **The shielded driver rendered a full rollout and AlpaSim scored it `pass`.** The phase-3
@@ -323,12 +349,16 @@ slightly tighter than the real car. That affects the swept path, not the straigh
 braking distance the certificate mostly rests on, but it is a real approximation and should
 be closed if the shield ever certifies turning manoeuvres.
 
-## The remaining open problem
+## The remaining open problem — SOLVED (2026-08-13)
 
 **Trajectory ⇄ per-step command.** The shield emits `(accel, steer)`; AlpaSim wants
-waypoints. Rolling forward is done; *inverting* an inner model's trajectory into commands
-is not, and is subtle — the shield reasons in a rate-limited kinematic bicycle, and a
-network's waypoints need not be feasible under it.
+waypoints, and an inner model *proposes* waypoints. Rolling forward was done; *inverting* an
+inner model's trajectory into commands was the open piece, and subtle — the shield reasons in
+a rate-limited kinematic bicycle, and a network's waypoints need not be feasible under it.
+**`control.py` closes this**: a pure-pursuit + speed-profile tracker follows the inner plan as
+far as the bicycle allows and lets the shield veto the rest. Not analytic inversion (which
+would fight infeasible waypoints) but tracking — the policy proposes, the shield disposes,
+`n_interventions` counts the disagreements. See the top session entry.
 
 **The thing that makes this interesting, and the flaw to design around:** a braking
 certificate is only as sound as the geometry it is computed against. Putting a learned
