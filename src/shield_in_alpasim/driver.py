@@ -88,6 +88,10 @@ OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
 # `camera` (learned metric-depth perception over the front camera — the degradation experiment).
 OBSTACLE_SOURCE_ENV_VAR = "SHIELD_OBSTACLE_SOURCE"
 
+# If set, dump per-cycle perceived (camera) vs true (GT) obstacle discs here for BEV visualisation
+# (scripts/make_bev_video.py). Off by default — pure debug instrumentation, no effect on driving.
+DEBUG_DIR_ENV_VAR = "SHIELD_DEBUG_DIR"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -224,6 +228,9 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # The policy being shielded, or None for the coasting baseline. Any object with a
         # `predict(prediction_input) -> ModelPrediction` — i.e. another `BaseTrajectoryModel`.
         self._inner_model = inner_model
+        # Optional per-cycle BEV debug dump (perceived vs true discs); off unless the env is set.
+        self._debug_dir = os.environ.get(DEBUG_DIR_ENV_VAR) or None
+        self._debug_i = 0
 
     @classmethod
     def from_config(cls, model_cfg, device, camera_ids, context_length, output_frequency_hz):
@@ -328,6 +335,8 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         if self._obstacle_source is not None:
             # Learned-perception arm: build the field from camera frames.
             field = self._obstacle_source.field_for(prediction_input)
+            if self._debug_dir:
+                self._dump_debug(prediction_input, field)
         elif self._scene_source is not None:
             # Ground-truth arm: sample the scene's actors at the current ego pose.
             ego = ego_pose_from_history(prediction_input.ego_pose_history)
@@ -341,6 +350,24 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         if self._rear_filter:
             field = forward_relevant_field(field, self._cfg)
         return field
+
+    def _dump_debug(self, prediction_input, camera_field) -> None:
+        """Save this cycle's perceived (camera) vs true (GT) discs for the BEV video.
+
+        Samples the ground-truth field alongside the camera field the shield actually uses, both
+        in the rig frame, so `scripts/make_bev_video.py` can show "what the camera sees vs what's
+        really there". Debug-only; guarded by `$SHIELD_DEBUG_DIR`.
+        """
+        cam = np.asarray(getattr(camera_field, "circles", np.zeros((0, 3))), float)
+        gt = np.zeros((0, 3))
+        if self._scene_source is not None:
+            ego = ego_pose_from_history(prediction_input.ego_pose_history)
+            if ego is not None:
+                gt = np.asarray(getattr(self._scene_source.field_at(*ego), "circles", gt), float)
+        os.makedirs(self._debug_dir, exist_ok=True)
+        np.savez(os.path.join(self._debug_dir, "cyc_%04d.npz" % self._debug_i),
+                 camera=cam, gt=gt, speed=float(prediction_input.speed))
+        self._debug_i += 1
 
     def _rollout(self, initial_speed: float, obstacles=None, policy=None,
                  horizon_steps: int | None = None, return_stats: bool = False):
