@@ -76,6 +76,10 @@ EMPTY_FIELD = CircleField(None)
 # Drop obstacles the shield cannot hit by moving forward — set SHIELD_REAR_FILTER=0 to disable.
 REAR_FILTER_ENV_VAR = "SHIELD_REAR_FILTER"
 
+# Emit the inner policy's plan unchanged when the shield doesn't intervene (a true filter only
+# acts when it must). Set SHIELD_PASSTHROUGH=0 to always emit our tracked re-roll instead.
+PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -166,6 +170,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         scene_source: SceneObstacleSource | None = None,
         inner_model=None,
         rear_filter: bool | None = None,
+        passthrough: bool | None = None,
     ):
         self._cfg = cfg
         # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
@@ -174,6 +179,13 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         self._rear_filter = (
             os.environ.get(REAR_FILTER_ENV_VAR, "1") != "0" if rear_filter is None
             else rear_filter
+        )
+        # Emit the inner policy's plan verbatim when the shield doesn't intervene, rather than
+        # our tracked re-roll (whose lateral error otherwise drifts the car off the logged
+        # route). On by default; `SHIELD_PASSTHROUGH=0` disables it.
+        self._passthrough = (
+            os.environ.get(PASSTHROUGH_ENV_VAR, "1") != "0" if passthrough is None
+            else passthrough
         )
         self._camera_ids = list(camera_ids)
         self._context_length = context_length
@@ -281,13 +293,14 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         return field
 
     def _rollout(self, initial_speed: float, obstacles=None, policy=None,
-                 horizon_steps: int | None = None) -> np.ndarray:
+                 horizon_steps: int | None = None, return_stats: bool = False):
         """Roll `policy` through the shield for `horizon_steps`, return `(T, 2)` xy.
 
         `policy(state) -> (accel, steer)`; defaults to `_coast` (go straight, hold speed), the
         baseline the shield filters when no inner model is configured. `horizon_steps` defaults
-        to `self._horizon_steps` (sized to span the MPC horizon, see DEFAULT_HORIZON_S). Kept
-        free of AlpaSim types so it's testable without AlpaSim/torch installed.
+        to `self._horizon_steps` (sized to span the MPC horizon, see DEFAULT_HORIZON_S). With
+        `return_stats`, returns `(xy, stats)` so the caller can see whether the shield
+        intervened. Kept free of AlpaSim types so it's testable without AlpaSim/torch installed.
         """
         obstacles = self._obstacles if obstacles is None else obstacles
         policy = _coast if policy is None else policy
@@ -325,7 +338,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             # shielded_rollout truncates on collision; clamping holds the last pose so the
             # trajectory stays the fixed length AlpaSim expects.
             xy[t] = states[min((t + 1) * substeps_per_waypoint, len(states) - 1)].xy
-        return xy
+        return (xy, stats) if return_stats else xy
 
     def _proposed_waypoints(self, prediction_input) -> np.ndarray | None:
         """Ground-plane `(T, 2)` waypoints from the inner policy, or None when coasting.
@@ -343,20 +356,31 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         self._validate_cameras(prediction_input.camera_images)
         obstacles = self._obstacles_for(prediction_input)
 
-        proposed = self._proposed_waypoints(prediction_input)
-        policy = None
-        horizon_steps = self._horizon_steps
-        if proposed is not None:
-            # Track the inner plan at its own output cadence; the shield then filters the
-            # per-step commands the tracker produces.
-            policy = make_tracking_policy(proposed, 1.0 / self._output_frequency_hz, self._cfg)
-            # Emit at least the inner model's own horizon as well as the MPC's: a shorter
-            # output would be clamped to its endpoint by the MPC and braked to a stop there.
-            horizon_steps = max(self._horizon_steps, len(proposed))
+        # Coasting baseline (no inner policy): shield-filter a go-straight command.
+        if self._inner_model is None:
+            xy = self._rollout(prediction_input.speed, obstacles, None)
+            return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
 
-        xy = self._rollout(prediction_input.speed, obstacles, policy, horizon_steps)
-        # The shield plans in the ground plane; `from_planar` lifts (T, 2) + headings into
-        # the (K, T, 3) / (K, T, 3, 3) pose pair `ModelPrediction` actually holds.
+        # Decorator path: track the inner plan, run it through the shield.
+        inner_prediction = self._inner_model.predict(prediction_input)
+        proposed = np.asarray(inner_prediction.selected_positions, dtype=float)[:, :2]
+        policy = make_tracking_policy(proposed, 1.0 / self._output_frequency_hz, self._cfg)
+        # Emit at least the inner model's own horizon as well as the MPC's: a shorter output
+        # would be clamped to its endpoint by the MPC and braked to a stop there.
+        horizon_steps = max(self._horizon_steps, len(proposed))
+        xy, stats = self._rollout(
+            prediction_input.speed, obstacles, policy, horizon_steps, return_stats=True
+        )
+
+        if self._passthrough and stats["n_interventions"] == 0:
+            # The shield had no objection to the inner plan — emit it *verbatim* rather than our
+            # tracked re-roll, whose lateral error otherwise walks the car off the logged route
+            # (measured: it truncated progress on curvier scenes). A filter only alters its
+            # input when it must. Soundness note (HANDOFF, "passthrough"): the certificate is on
+            # the tracked commands, and the raw plan is within tracking error of them.
+            return inner_prediction
+
+        # The shield intervened: emit the certified (braked/steered) trajectory instead.
         return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
 
     @property

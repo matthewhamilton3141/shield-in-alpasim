@@ -66,6 +66,9 @@ services:
       # Ignore un-hittable behind-the-ego obstacles (default on); set host SHIELD_REAR_FILTER=0
       # to A/B against the over-conservative behaviour (driver.py `forward_relevant_field`).
       - "SHIELD_REAR_FILTER=${oc.env:SHIELD_REAR_FILTER,1}"
+      # Emit VaVAM's plan verbatim when the shield doesn't intervene (default on); set host
+      # SHIELD_PASSTHROUGH=0 to always emit the tracked re-roll (driver.py `predict`).
+      - "SHIELD_PASSTHROUGH=${oc.env:SHIELD_PASSTHROUGH,1}"
     command:
       # Only the shield needs registering; `vam` is already baked into the image.
       - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"

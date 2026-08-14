@@ -74,6 +74,29 @@ def test_rear_filter_flag_is_honored():
     assert _driver(rear_filter=True)._rear_filter is True
 
 
+def test_passthrough_flag_is_honored():
+    assert _driver(passthrough=False)._passthrough is False
+    assert _driver(passthrough=True)._passthrough is True
+
+
+def test_rollout_return_stats_exposes_interventions():
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.control import make_tracking_policy
+
+    plan = np.array([[4.0 * (i + 1), 0.0] for i in range(6)])
+    # Clear field: the shield doesn't intervene -> passthrough would fire.
+    d = _driver(obstacles=CircleField(None))
+    policy = make_tracking_policy(plan, 1.0 / d.output_frequency_hz, VehicleConfig())
+    xy, stats = d._rollout(initial_speed=8.0, policy=policy, return_stats=True)
+    assert xy.shape[1] == 2 and stats["n_interventions"] == 0
+
+    # Obstacle dead ahead: the shield must intervene -> passthrough would NOT fire.
+    d2 = _driver(obstacles=CircleField(np.array([[18.0, 0.0, 1.0]])))
+    _, stats2 = d2._rollout(initial_speed=10.0, policy=policy, return_stats=True)
+    assert stats2["n_interventions"] > 0
+
+
 def test_default_horizon_spans_the_mpc_window():
     # No explicit horizon_steps -> derive from the rate to span DEFAULT_HORIZON_S (3.0 s),
     # which must cover the controller's 2.0 s MPC horizon or the MPC brakes to a stop at our
