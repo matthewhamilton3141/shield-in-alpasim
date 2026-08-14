@@ -5,6 +5,47 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ★★★ HEADLINE SWEEP — 8 scenes × 3 rollouts, unshielded vs shielded (2026-08-14)
+
+`scene_sweep.sh` with `N_ROLLOUTS=3`, shielded = passthrough + rear-filter on. **at-fault** =
+mean at-fault-collision rate over 3 rollouts; **prog** = mean progress.
+
+| scene | uns. at-fault | shd. at-fault | uns. prog | shd. prog | verdict |
+|---|---|---|---|---|---|
+| 01d503d4 | 0.67 | **0.00** | 0.86 | 1.00 | shield saves |
+| 023b7fcc | 0.00 | 0.00 | 1.00 | 0.97 | tie |
+| 0245ff75 | 0.00 | **0.33** | 0.49 | 0.33 | shield hurts |
+| 026d6a39 | 0.00 | 0.00 | 1.00 | 0.89 | tie (passthrough held) |
+| 02e075b9 | offroad-fail | 0.00 | 0.40 | 1.00 | shield saves (rescued offroad) |
+| 02eadd92 | 1.00 | **0.00** | 0.70 | 0.74 | shield saves |
+| 032b6f21 | 0.00 | 0.00 | 0.91 | 0.85 | tie |
+| 04394343 | 0.00 | **1.00** | 0.80 | 0.21 | **shield CAUSES a crash** |
+| **mean** | **0.21** | **0.17** | **0.77** | **0.75** | |
+
+**Honest headline: the shield is domain-dependent, not a clean win.** In aggregate at-fault drops
+0.21→0.17 and progress is ~flat (0.77→0.75). But the *per-scene* story is the finding: the shield
+**prevents** crashes / rescues offroad on low-speed city scenes where VaVAM fails (01d503d4,
+02eadd92, 02e075b9), and **causes** failures where its model doesn't fit — most starkly 04394343.
+
+**Why 04394343 breaks (diagnosed):** it's a highway scene — ego at **17.3 m/s**, but kitti-nav's
+`VehicleConfig.max_speed = 15` (KITTI city driving). At 17 m/s an obstacle 2.8 m ahead is
+unstoppable (needs ~33 m), so the shield hard-brakes (its only move) into a collision that
+*unshielded VaVAM steered around*. clearance goes to −2 m (already overlapping). **The
+certificate is only as good as the kinematic model, and the model is out of domain above 15
+m/s.** This is the sharp, real result: a KITTI-tuned braking shield helps in the domain it was
+built for and is actively harmful outside it.
+
+**Next, in priority order:**
+1. **Domain-match / out-of-domain guard.** Either raise `max_speed` + retune decel for highway,
+   or (safer) detect out-of-domain (ego speed > shield max, or ICS at entry) and *pass VaVAM
+   through untouched* rather than hard-brake into a crash. The latter is a small, principled
+   change and would likely flip 04394343 from fail back to VaVAM's 0.80 pass.
+2. Investigate 0245ff75 (the other shield-hurts scene) — likely the same braking-into-trouble
+   pattern; confirm with its cycle log.
+3. Re-sweep after (1). Raw rows in `~/sweep_results.csv` on the box.
+
+---
+
 ## ✔ Passthrough fix WORKS — recovers the tracker-drift progress loss (2026-08-14)
 
 Implemented passthrough (emit VaVAM's `ModelPrediction` verbatim when the shield rollout has 0
