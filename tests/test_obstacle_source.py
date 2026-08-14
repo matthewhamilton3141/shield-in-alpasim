@@ -76,6 +76,15 @@ def _fake_prediction_input(depth, cam="camera_front_wide_120fov"):
     return type("PI", (), {"camera_images": {cam: [frame]}})()
 
 
+def test_intrinsics_rescale_with_resolution():
+    # Calibrated at 1920x1080; a half-res frame halves fx/fy/cx/cy.
+    src = CameraObstacleSource.front_wide(depth_model=lambda x: x)
+    fx, fy, cx, cy = src._intrinsics_for(540, 960)  # half of 1080x1920
+    assert np.allclose([fx, fy, cx, cy], [1545 / 2, 1545 / 2, 960 / 2, 560 / 2])
+    # At the reference resolution the intrinsics are unchanged.
+    assert np.allclose(src._intrinsics_for(1080, 1920), [1545, 1545, 960, 560])
+
+
 def test_camera_source_end_to_end_puts_a_blob_ahead():
     # A central patch of obstacle at 10 m, everything else invalid. With the standard frame
     # mapping the disc(s) should land ~10 m ahead (rig x) and near-zero lateral (rig y).
@@ -86,6 +95,7 @@ def test_camera_source_end_to_end_puts_a_blob_ahead():
         camera_id="camera_front_wide_120fov",
         intrinsics=(100.0, 100.0, 50.0, 50.0),
         rig_to_camera=(_R_RIG_TO_CAM, np.zeros(3)),
+        ref_hw=(100, 100),  # intrinsics above are already for this frame size (no rescale)
         ground_band=(-100.0, 100.0),  # disable height filtering for this plumbing test
         max_range_m=40.0, cell_m=1.0, min_pts=3,
     )

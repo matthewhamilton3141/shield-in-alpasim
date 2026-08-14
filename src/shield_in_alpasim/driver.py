@@ -84,6 +84,10 @@ PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
 # kinematic model clamps speed to max_speed). Set SHIELD_OOD_GUARD=0 to shield anyway.
 OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
 
+# Where the shield's obstacle field comes from: `gt` (default; ground-truth scene geometry) or
+# `camera` (learned metric-depth perception over the front camera — the degradation experiment).
+OBSTACLE_SOURCE_ENV_VAR = "SHIELD_OBSTACLE_SOURCE"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -241,6 +245,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         inner_model = cls._build_inner_model(
             model_cfg, device, camera_ids, context_length, output_frequency_hz
         )
+        obstacle_source = cls._build_obstacle_source(device, camera_ids)
 
         return cls(
             cfg=cfg,
@@ -248,8 +253,33 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             context_length=context_length or 1,
             output_frequency_hz=output_frequency_hz,
             scene_source=scene_source,
+            obstacle_source=obstacle_source,
             inner_model=inner_model,
         )
+
+    @staticmethod
+    def _build_obstacle_source(device, camera_ids):
+        """The learned-perception obstacle source when `$SHIELD_OBSTACLE_SOURCE=camera`, else None.
+
+        None keeps the ground-truth arm (the shield reads the scene's actors). `camera` swaps in
+        a monocular metric-depth net over the front camera — the same shield, a *learned* obstacle
+        field, so the run measures how much the certificate degrades under real perception. The
+        depth-net imports (`torch`/`transformers`) are deferred to here so the ground-truth path
+        and the Mac tests never touch them.
+        """
+        kind = os.environ.get(OBSTACLE_SOURCE_ENV_VAR, "gt").lower()
+        if kind in ("", "gt", "ground_truth", "groundtruth"):
+            return None
+        if kind != "camera":
+            raise ValueError(f"{OBSTACLE_SOURCE_ENV_VAR}={kind!r}; expected 'gt' or 'camera'.")
+
+        from shield_in_alpasim.depth import DEFAULT_MODEL, HFDepthModel
+        from shield_in_alpasim.obstacle_source import CameraObstacleSource
+
+        model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
+        logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)
+        depth_model = HFDepthModel(model_name, device=str(device))
+        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0])
 
     @staticmethod
     def _build_inner_model(model_cfg, device, camera_ids, context_length, output_frequency_hz):

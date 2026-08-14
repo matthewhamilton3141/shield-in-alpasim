@@ -39,6 +39,20 @@ from kitti_nav.vehicle import CircleField
 logger = logging.getLogger(__name__)
 
 
+# Calibration of `camera_front_wide_120fov`, copied from the `extra_cameras` block the renderer
+# uses (vavam_configs.yaml / shielded_vavam_configs.yaml). The driver's `from_config` does not
+# receive `extra_cameras`, so for the single-camera VaVAM setup we carry the known calibration
+# here; `field_for` rescales the intrinsics to whatever resolution the frame actually arrives at.
+FRONT_WIDE_REF_HW = (1080, 1920)
+FRONT_WIDE_FOCAL = (1545.0, 1545.0)          # fx, fy at the reference resolution
+FRONT_WIDE_PRINCIPAL = (960.0, 560.0)        # cx, cy
+FRONT_WIDE_RIG_TO_CAMERA = {
+    "translation_m": [1.65897811, -0.01443456, 1.51539499],
+    "rotation_xyzw": [-0.49929397355810856, 0.5039939168301356,
+                      -0.4972939976976715, 0.49939397235113037],
+}
+
+
 class ObstacleSource(Protocol):
     """Produces the shield's obstacle field, in the ego rig frame, for one inference.
 
@@ -135,11 +149,12 @@ class CameraObstacleSource:
     """
 
     def __init__(self, depth_model, camera_id: str, intrinsics, rig_to_camera,
-                 ground_band=(0.3, 2.5), max_range_m: float = 40.0,
+                 ref_hw=FRONT_WIDE_REF_HW, ground_band=(0.3, 2.5), max_range_m: float = 40.0,
                  cell_m: float = 0.5, min_pts: int = 5, stride: int = 2):
         self._depth = depth_model
         self._camera_id = camera_id
         self._fx, self._fy, self._cx, self._cy = intrinsics
+        self._ref_h, self._ref_w = ref_hw  # resolution the intrinsics were calibrated at
         R, t = rig_to_camera
         self._R = np.asarray(R, float).reshape(3, 3)
         self._t = np.asarray(t, float).reshape(3)
@@ -149,29 +164,55 @@ class CameraObstacleSource:
         self._min_pts = min_pts
         self._stride = stride
 
+    def _intrinsics_for(self, h: int, w: int) -> tuple[float, float, float, float]:
+        """Intrinsics rescaled from the reference resolution to the actual frame `(h, w)`.
+
+        The renderer may deliver, or the model may resize to, a resolution other than the one the
+        intrinsics were calibrated at; a pinhole's focal length and principal point scale linearly
+        with resolution, so rescale rather than trust the frame is full-res.
+        """
+        sw, sh = w / self._ref_w, h / self._ref_h
+        return self._fx * sw, self._fy * sh, self._cx * sw, self._cy * sh
+
     @classmethod
     def from_config(cls, depth_model, camera_id: str, opencv_pinhole: dict,
-                    rig_to_camera: dict, **kwargs) -> "CameraObstacleSource":
-        """Build from AlpaSim's `extra_cameras` entry (its `intrinsics.opencv_pinhole` +
+                    rig_to_camera: dict, ref_hw=FRONT_WIDE_REF_HW, **kwargs) -> "CameraObstacleSource":
+        """Build from an AlpaSim `extra_cameras` entry (`intrinsics.opencv_pinhole` +
         `rig_to_camera`). See the frame-convention caveat in the module docstring."""
         fx, fy = opencv_pinhole["focal_length"]
         cx, cy = opencv_pinhole["principal_point"]
         R = quat_xyzw_to_matrix(rig_to_camera["rotation_xyzw"])
         t = np.asarray(rig_to_camera["translation_m"], float)
-        return cls(depth_model, camera_id, (fx, fy, cx, cy), (R, t), **kwargs)
+        return cls(depth_model, camera_id, (fx, fy, cx, cy), (R, t), ref_hw=ref_hw, **kwargs)
+
+    @classmethod
+    def front_wide(cls, depth_model, camera_id: str = "camera_front_wide_120fov", **kwargs):
+        """The single-camera VaVAM setup: `camera_front_wide_120fov` with its known calibration."""
+        return cls.from_config(
+            depth_model, camera_id,
+            {"focal_length": FRONT_WIDE_FOCAL, "principal_point": FRONT_WIDE_PRINCIPAL},
+            FRONT_WIDE_RIG_TO_CAMERA, ref_hw=FRONT_WIDE_REF_HW, **kwargs,
+        )
 
     def field_for(self, prediction_input) -> CircleField:
         frames = prediction_input.camera_images[self._camera_id]
         depth = np.asarray(self._depth(frames[-1].image), float)
-        pts_cam = backproject_depth(
-            depth, self._fx, self._fy, self._cx, self._cy, self._max_range_m, self._stride
-        )
+        fx, fy, cx, cy = self._intrinsics_for(*depth.shape[:2])
+        pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
         pts_rig = camera_to_rig(pts_cam, self._R, self._t)
         obstacles = pts_rig[height_band_mask(pts_rig, *self._ground_band)]
         circles = occupancy_to_circles(
             obstacles[:, :2], self._cell_m, self._max_range_m, self._min_pts
         )
+        # Rich per-cycle log: on the box this is how the frame conventions get verified (are the
+        # discs ahead, at plausible ranges?) and the depth scale sanity-checked.
+        d = depth[np.isfinite(depth) & (depth > 0)]
         logger.info(
-            "camera obstacle source: %d in-band points -> %d discs", len(obstacles), len(circles)
+            "camera field: frame=%s depth[m] med=%.1f p90=%.1f | %d pts -> %d in-band -> %d discs"
+            "%s", depth.shape, float(np.median(d)) if len(d) else -1.0,
+            float(np.percentile(d, 90)) if len(d) else -1.0, len(pts_cam), len(obstacles),
+            len(circles),
+            "" if not len(circles) else " | nearest x=%.1f y=%.1f" % (
+                tuple(circles[np.argmin(np.linalg.norm(circles[:, :2], axis=1)), :2])),
         )
         return CircleField(circles if len(circles) else None)
