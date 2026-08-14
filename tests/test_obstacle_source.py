@@ -19,9 +19,8 @@ from shield_in_alpasim.obstacle_source import (
 )
 
 # OpenCV camera (x right, y down, z forward) -> rig (x forward, y left, z up): p_rig = M p_cam.
+# camera_to_rig applies (R, t) as camera->rig (p_rig = R p_cam + t), so pass R = M directly.
 _M_CAM_TO_RIG = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]], float)
-# camera_to_rig applies Rᵀ, so pass R = Mᵀ to realise p_rig = M p_cam.
-_R_RIG_TO_CAM = _M_CAM_TO_RIG.T
 
 
 def test_quat_identity_is_identity():
@@ -44,7 +43,7 @@ def test_backproject_drops_invalid_and_out_of_range():
 
 def test_camera_to_rig_maps_forward_depth_to_rig_x():
     # A point straight ahead in the camera (0, 0, d) should land at rig (d, 0, 0).
-    p = camera_to_rig(np.array([[0.0, 0.0, 8.0]]), _R_RIG_TO_CAM, np.zeros(3))
+    p = camera_to_rig(np.array([[0.0, 0.0, 8.0]]), _M_CAM_TO_RIG, np.zeros(3))
     assert np.allclose(p[0], [8.0, 0.0, 0.0])
 
 
@@ -101,7 +100,7 @@ def test_camera_source_end_to_end_puts_a_blob_ahead():
         depth_model=lambda _img: depth,
         camera_id="camera_front_wide_120fov",
         intrinsics=(100.0, 100.0, 50.0, 50.0),
-        rig_to_camera=(_R_RIG_TO_CAM, np.zeros(3)),
+        rig_to_camera=(_M_CAM_TO_RIG, np.zeros(3)),
         ref_hw=(100, 100),  # intrinsics above are already for this frame size (no rescale)
         ground_band=(-100.0, 100.0),  # disable height filtering for this plumbing test
         max_range_m=40.0, cell_m=1.0, min_pts=3,

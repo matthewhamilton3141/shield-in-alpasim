@@ -21,9 +21,10 @@ FRAME CONVENTIONS — VERIFY AGAINST ALPASIM ON THE BOX BEFORE TRUSTING A NUMBER
 the kind of interface assumption this project checks against upstream rather than guessing):
   - Back-projection assumes the OpenCV pinhole camera frame — x right, y down, z forward —
     matching the `opencv_pinhole` intrinsics AlpaSim's `extra_cameras` config carries.
-  - `rig_to_camera` is taken to map a rig-frame point into the camera frame:
-    `p_cam = R @ p_rig + t`, so `p_rig = Rᵀ (p_cam - t)`. If AlpaSim's stored transform is the
-    inverse (camera pose in the rig), transpose R and negate accordingly.
+  - `rig_to_camera` in AlpaSim's config stores the **camera's pose in the rig** (its
+    `translation_m` is the camera's location — ~1.66 m forward, 1.5 m up), i.e. `(R, t)` is
+    camera→rig and `p_rig = R @ p_cam + t`. Verified on the box: the inverse put obstacles behind
+    the ego; this puts a forward pixel ahead at camera height.
   - Output is the rig frame `obstacles.py` and the shield use: x forward, y left, z up.
 """
 
@@ -94,13 +95,16 @@ def backproject_depth(depth, fx, fy, cx, cy, max_range_m, stride: int = 1) -> np
 
 
 def camera_to_rig(pts_cam: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """OpenCV camera-frame points -> rig frame, given `rig_to_camera` (`p_cam = R p_rig + t`).
+    """OpenCV camera-frame points -> rig frame.
 
-    `p_rig = Rᵀ (p_cam - t)`; as row vectors that is `(pts_cam - t) @ R`.
+    AlpaSim's `rig_to_camera` stores the **camera's pose in the rig** (its `translation_m` is the
+    camera's location in the rig — ~1.66 m forward, 1.5 m up), i.e. `(R, t)` is camera→rig:
+    `p_rig = R @ p_cam + t`. (Verified on the box: with this, a forward pixel lands ahead at
+    camera height; the inverse put obstacles behind the ego.) As row vectors: `pts_cam @ Rᵀ + t`.
     """
     if len(pts_cam) == 0:
         return pts_cam.reshape(-1, 3)
-    return (pts_cam - np.asarray(t, float).reshape(3)) @ np.asarray(R, float)
+    return pts_cam @ np.asarray(R, float).T + np.asarray(t, float).reshape(3)
 
 
 def height_band_mask(pts_rig: np.ndarray, z_min: float, z_max: float) -> np.ndarray:
