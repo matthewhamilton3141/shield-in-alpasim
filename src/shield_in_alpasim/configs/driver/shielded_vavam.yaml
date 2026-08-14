@@ -1,0 +1,61 @@
+# driver=shielded_vavam — kitti-nav's shield wrapping VaVAM (valeoai VideoActionModel).
+#
+# ShieldedDriver is the model AlpaSim loads (`model_type: shielded`). At from_config it reads
+# $SHIELD_INNER_MODEL=vam (set in shielded_vavam_configs.yaml) and builds VaVAM as its inner
+# policy, reusing *this* config's model.* — so `checkpoint_path`, `tokenizer_path`, `device`
+# and the single camera below are VaVAM's. Each predict(): VaVAM proposes a plan from one
+# front camera, control.py tracks it into (accel, steer), the shield certifies it. The
+# shield's n_interventions (logged) is the experiment's signal.
+#
+# Chosen over Transfuser because VaVAM is already registered in the base image (no rebuild),
+# needs only one camera (matching the shield's existing config), and its weights are a public
+# checksummed download (GitHub release), whereas Transfuser needed both an image rebuild and a
+# checkpoint of unknown provenance.
+#
+# ── Box prerequisites ───────────────────────────────────────────────────────────────────
+#   1. Assets in data/drivers/vavam/ (host) → /mnt/drivers/vavam/ (container):
+#      `bash data/download_vavam_assets.sh --model VaVAM-S`  (public, ~1.3 GB, checksummed).
+#      This config points at VaVAM-S (width 768); switch the paths for -B/-L if downloaded.
+#   2. Arm the shield: export SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/<scene>.usdz
+#      on the host before the wizard run. Unset → the shield filters VaVAM against an empty
+#      field and can only ever agree with it (no ground-truth geometry, no meaningful veto).
+# ────────────────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  - shielded_vavam_configs   # VaVAM's camera + the driver-container wiring (global)
+  - _self_                   # values here win over the composed config
+
+log_level: ${wizard.log_level}
+
+model:
+  model_type: shielded       # the OUTER model is the shield; it wraps the inner one
+  # The INNER VaVAM's weights + tokenizer. VaVAM-S (width 768), the smallest release.
+  checkpoint_path: "/mnt/drivers/vavam/VAM_width_768_pretrained_139k.pt"
+  device: "cuda"             # VaVAM runs on GPU; the shield ignores this
+  tokenizer_path: "/mnt/drivers/vavam/VQ_ds16_16384_llamagen_encoder.jit"
+
+host: "0.0.0.0"
+port: ???
+
+inference:
+  use_cameras: ["camera_front_wide_120fov"]  # VaVAM requires exactly one camera
+  max_batch_size: 32
+  subsample_factor: 1
+  context_length: 1
+
+route:
+  # VaVAM consumes the route/command; the shield passes prediction_input through untouched,
+  # so mirror VaVAM's own route settings.
+  default_command: 2         # 0=right, 1=left, 2=straight
+  use_waypoint_commands: true
+  command_distance_threshold: 3.0
+  min_lookahead_distance: 20.0
+
+output_dir: "/mnt/output/driver"
+
+# Off: the shield's output is already certified against its own dynamics; re-smoothing it
+# downstream would invalidate that certificate.
+trajectory_optimizer:
+  enabled: false
+
+plot_debug_images: false

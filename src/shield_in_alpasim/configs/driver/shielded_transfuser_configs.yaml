@@ -1,0 +1,147 @@
+# @package _global_
+# Global config for `driver=shielded_transfuser`: the shield wrapping AlpaSim's Transfuser.
+#
+# Two halves:
+#   1. Transfuser's camera + intrinsics config, inlined verbatim from the in-tree
+#      transfuser_configs.yaml (kept self-contained so this does not depend on the transfuser
+#      plugin's config package being on the Hydra search path at wizard time).
+#   2. the driver-container wiring from shielded_configs.yaml, plus SHIELD_INNER_MODEL so our
+#      from_config builds Transfuser as the inner policy — and WITHOUT gpus:null, because
+#      Transfuser's forward pass needs the GPU (the numpy shield does not, but it rides along).
+#
+# See shielded_configs.yaml for the full why of the mount/install/env mechanism. Restated in
+# full here because OmegaConf replaces lists on merge.
+
+# ---- (1) Transfuser cameras (inlined from transfuser_configs.yaml) ----
+# Runtime configuration for Transfuser driver (4 cameras)
+# Cameras are rendered at 900x1600 and resized by the model to 270x480 per camera
+
+runtime:
+  simulation_config:
+    force_gt_duration_us: 3_000_000
+    n_sim_steps: 100
+    n_rollouts: 1
+    control_timestep_us: 250_000
+    ego_mask_rig_config_id: null
+
+    # Transfuser uses 4 cameras - render at full resolution, model handles resize
+    cameras:
+      - height: 900
+        width: 1600
+        logical_id: camera_cross_left_120fov
+        frame_interval_us: 250_000
+        shutter_duration_us: 30_000
+      - height: 900
+        width: 1600
+        logical_id: camera_front_wide_120fov
+        frame_interval_us: 250_000
+        shutter_duration_us: 30_000
+      - height: 900
+        width: 1600
+        logical_id: camera_cross_right_120fov
+        frame_interval_us: 250_000
+        shutter_duration_us: 30_000
+      - height: 900
+        width: 1600
+        # used as nuplan B0, see extrinsics below.
+        logical_id: camera_rear_left_70fov
+        frame_interval_us: 250_000
+        shutter_duration_us: 30_000
+
+  extra_cameras:
+    # Camera positions and pinhole intrinsics for Transfuser's 4-camera setup
+    # L0 - cross left camera
+    - logical_id: camera_cross_left_120fov
+      rig_to_camera:
+        translation_m: [1.646354, 0.143369, 1.521469]
+        rotation_xyzw: [0.679354, -0.207915, 0.215233, -0.670018]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    # F0 - front wide camera
+    - logical_id: camera_front_wide_120fov
+      rig_to_camera:
+        translation_m: [1.670100, -0.025875, 1.522623]
+        rotation_xyzw: [0.509222, -0.503331, 0.495086, -0.492180]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    # R0 - cross right camera
+    - logical_id: camera_cross_right_120fov
+      rig_to_camera:
+        translation_m: [1.626168, -0.161517, 1.526269]
+        rotation_xyzw: [0.205424, -0.674057, 0.676355, -0.214458]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    # B0 - rear camera
+    - logical_id: camera_rear_left_70fov
+      rig_to_camera:
+        translation_m: [-0.486641, -0.000595, 1.486321]
+        rotation_xyzw: [0.503851, 0.497823, -0.499723, -0.498582]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+
+# ---- (2) driver-container wiring (shield + Transfuser inner policy) ----
+services:
+  driver:
+    # NOTE: no `gpus: null` here (unlike shielded_configs.yaml) — Transfuser runs on the GPU.
+    replicas_per_container: 1
+    volumes:
+      # restated from base_config.yaml services.driver, then shield/transfuser additions
+      - "${defines.drivers}:/mnt/drivers"                 # holds /mnt/drivers/transfuser/<ckpt>
+      - "${wizard.log_dir}:/mnt/output"
+      - "${repo-relative:'src'}:/repo/src"
+      - "${repo-relative:'plugins'}:/repo/plugins"        # transfuser_driver lives here
+      - "${defines.hf_cache}:/root/.cache/huggingface"
+      - "${scenes.scene_cache}:/mnt/nre-data"             # shield reads GT geometry from the usdz
+      - "${oc.env:SHIELD_SRC,${oc.env:HOME}/shield-in-alpasim}:/mnt/shield"
+      - "${oc.env:KITTI_NAV_SRC,${oc.env:HOME}/kitti-nav/src}:/mnt/kitti-nav-src"
+    environments:
+      - "PYTHONPATH=/mnt/kitti-nav-src"
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+      # Build Transfuser as the inner policy the shield filters (driver.py `_build_inner_model`).
+      - "SHIELD_INNER_MODEL=transfuser"
+    command:
+      # Register both out-of-tree-into-this-image plugins in the baked venv before launching.
+      # Transfuser is a workspace member but the image's `uv sync --extra all` does NOT include
+      # it (it sits under the `transfuser` extra), so its entry point is not baked in — install
+      # it editable too. --no-deps assumes its Python deps (timm/beartype/jaxtyping) are already
+      # in the venv; if they are not, rebuild the base image with `--extra transfuser` (see the
+      # box prerequisites note in shielded_transfuser.yaml).
+      - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
+      - "uv pip install --python /repo/.venv/bin/python -e /repo/plugins/transfuser_driver --no-deps --no-build-isolation &&"
+      - "uv run -m alpasim_driver.main"
+      - "--config-path=/mnt/output"
+      - "--config-name=driver-config.yaml"
+      - "host=0.0.0.0"
+      - "port={port}"

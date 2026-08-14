@@ -14,3 +14,9 @@ venv/
 # AlpaSim scene assets / rollout artifacts are large, never committed
 data/
 outputs/
+
+# Local render artifacts pulled from the box
+out_first_result/
+
+out_fix_result/
+out_video_result/

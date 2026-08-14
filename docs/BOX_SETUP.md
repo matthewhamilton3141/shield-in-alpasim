@@ -174,16 +174,20 @@ Leave `trafficsim` alone — it defaults to `disabled`, which is exactly what th
 arm needs. Passing `trafficsim=catk` makes actors reactive, and our on-disk geometry
 silently stops matching the simulation (see `HANDOFF.md`, "Settled").
 
-To actually arm the shield, the driver container needs the scene path:
+To actually arm the shield, set the **container-side** scene path on the host before the
+wizard run. The driver container's mounts, editable install and env are baked into
+`shielded_configs.yaml` (verified 2026-08-13; see HANDOFF.md phase-3), including
+`SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,}`, so all you set is:
 
 ```bash
-    services.driver.environments='["SHIELD_SCENE_USDZ=/mnt/nre-data/<sceneset>/<scene>.usdz"]'
+export SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/<scene>.usdz
 ```
 
 That path is **inside the container**, under the wizard's standard `/mnt/nre-data` mount —
-not the host path. With the variable unset the driver still runs, but with an empty obstacle
-field: the car coasts and the shield never fires. That is the designed fallback, and it is
-also exactly what a misconfigured path looks like, so check the driver log for
+not the host path. Export it in the shell that runs the wizard, because `${oc.env:...}`
+resolves in the host wizard process. With it unset the driver still runs, but with an empty
+obstacle field: the car coasts and the shield never fires. That is the designed fallback, and
+it is also exactly what a misconfigured path looks like, so check the driver log for
 `Loaded N scene actors` before believing a "no interventions" result.
 
 ### Phase 4 — the actual experiment

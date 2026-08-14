@@ -24,3 +24,58 @@ services:
   driver:
     gpus: null  # No GPU: the shield is numpy
     replicas_per_container: 1
+
+    # --- Getting an out-of-tree plugin into the driver container ---
+    #
+    # The `alpasim-base` image bakes in only AlpaSim's *in-tree* plugin entry points, via
+    # `uv sync` at build time (Dockerfile). `shielded` lives outside that tree, and the
+    # image sets `UV_NO_SYNC=1`, so `uv run` will NOT pick up a freshly bind-mounted plugin
+    # on its own — the entry point simply won't be registered. So we do it explicitly:
+    #   1. mount the shield checkout and kitti-nav's `src/` from the host, and
+    #   2. editable-install the shield into the container's baked venv *before* the driver
+    #      starts (the `&&` in `command` below).
+    # `--no-deps` because our `alpasim_*` requirements are workspace packages already in the
+    # venv and are not on PyPI (a plain resolve would fail); `--no-build-isolation` so the
+    # install reuses the venv's setuptools instead of fetching a build env over the network
+    # at every container start. This is the wizard's own `environments`/`volumes` mechanism
+    # (cf. `trafficsim/catk.yaml`), so it needs no fork of AlpaSim and no image rebuild.
+    #
+    # NOTE: OmegaConf *replaces* lists on merge, so `volumes` restates the base driver's
+    # mounts (base_config.yaml services.driver) in full and then adds ours.
+    volumes:
+      # -- restated verbatim from base_config.yaml `services.driver.volumes` --
+      - "${defines.drivers}:/mnt/drivers"
+      - "${wizard.log_dir}:/mnt/output"
+      - "${repo-relative:'src'}:/repo/src"
+      - "${repo-relative:'plugins'}:/repo/plugins"
+      - "${defines.hf_cache}:/root/.cache/huggingface"
+      # -- added for the shield --
+      # The base driver container does NOT mount the scene cache (only renderer/physics do),
+      # so without this the shield cannot open the `.usdz` it reads ground-truth geometry
+      # from. This is the mount that makes SHIELD_SCENE_USDZ resolvable inside the container.
+      - "${scenes.scene_cache}:/mnt/nre-data"
+      # The out-of-tree plugin and kitti-nav, from the host. Defaults assume the box layout
+      # (~/shield-in-alpasim, ~/kitti-nav); export SHIELD_SRC / KITTI_NAV_SRC to relocate.
+      - "${oc.env:SHIELD_SRC,${oc.env:HOME}/shield-in-alpasim}:/mnt/shield"
+      - "${oc.env:KITTI_NAV_SRC,${oc.env:HOME}/kitti-nav/src}:/mnt/kitti-nav-src"
+
+    environments:
+      # kitti_nav is a plain src-layout package; Python honours PYTHONPATH on top of the
+      # venv, so this is enough to `import kitti_nav` under `uv run` without installing it.
+      - "PYTHONPATH=/mnt/kitti-nav-src"
+      # The scene artifact as seen INSIDE this container. Unset -> empty field and the shield
+      # never fires (scene.py `from_env`), which is the designed inert fallback, not a crash.
+      # Set SHIELD_SCENE_USDZ_IN_CONTAINER on the host to the *container-side* path, e.g.
+      # /mnt/nre-data/all-usdzs/<scene>.usdz (the host path won't exist in the container).
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+
+    # Space-joined and run under `bash -c` (wizard services.py `_build_command` +
+    # deployment/docker_compose.py), so the `&&` chains the install ahead of the driver.
+    # Everything after the first line is base_config.yaml's driver command, verbatim.
+    command:
+      - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
+      - "uv run -m alpasim_driver.main"
+      - "--config-path=/mnt/output"
+      - "--config-name=driver-config.yaml"
+      - "host=0.0.0.0"
+      - "port={port}"
