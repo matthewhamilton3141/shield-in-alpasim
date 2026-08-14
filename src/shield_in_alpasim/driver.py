@@ -172,6 +172,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         horizon_s: float = DEFAULT_HORIZON_S,
         obstacles=None,
         scene_source: SceneObstacleSource | None = None,
+        obstacle_source=None,
         inner_model=None,
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
@@ -212,6 +213,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # `scene_source` is present, since that resamples per call as actors move.
         self._obstacles = EMPTY_FIELD if obstacles is None else obstacles
         self._scene_source = scene_source
+        # The learned-perception arm: any `ObstacleSource` (see `obstacle_source.py`) that builds
+        # the field from camera frames. When set it takes precedence over the ground-truth
+        # `scene_source` — this is the one seam the perfect-vs-learned experiment swaps.
+        self._obstacle_source = obstacle_source
         # The policy being shielded, or None for the coasting baseline. Any object with a
         # `predict(prediction_input) -> ModelPrediction` — i.e. another `BaseTrajectoryModel`.
         self._inner_model = inner_model
@@ -290,15 +295,19 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         the safe direction to fail here only because the car is still under ground-truth
         replay at that point (`force_gt_duration_us`); it is not yet driving on the shield.
         """
-        if self._scene_source is None:
+        if self._obstacle_source is not None:
+            # Learned-perception arm: build the field from camera frames.
+            field = self._obstacle_source.field_for(prediction_input)
+        elif self._scene_source is not None:
+            # Ground-truth arm: sample the scene's actors at the current ego pose.
+            ego = ego_pose_from_history(prediction_input.ego_pose_history)
+            if ego is None:
+                return self._obstacles
+            ego_xy, ego_yaw, timestamp_us = ego
+            field = self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
+        else:
             return self._obstacles
 
-        ego = ego_pose_from_history(prediction_input.ego_pose_history)
-        if ego is None:
-            return self._obstacles
-
-        ego_xy, ego_yaw, timestamp_us = ego
-        field = self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
         if self._rear_filter:
             field = forward_relevant_field(field, self._cfg)
         return field
