@@ -142,6 +142,36 @@ mean progress, now that the shielded arm drives properly. That table is the pape
 
 ---
 
+## ★ CAMERA-PERCEPTION ARM RUNS — the shield brakes for what the camera sees (2026-08-14)
+
+The learned-perception arm is wired and **validated end-to-end on the box**. `SHIELD_OBSTACLE_SOURCE=camera`
+swaps the ground-truth obstacle field for one built from the front camera: `depth.py`'s
+`HFDepthModel` (Depth Anything V2 Metric Outdoor, metres) → `obstacle_source.py`'s
+back-project → rig frame → height-band → BEV occupancy → discs → the same shield.
+
+Two interface bugs the first runs caught (both fixed, both were exactly the "verify on the box"
+flags): (1) the servicer sends **plain `(timestamp, image)` tuples**, not `CameraFrame` objects;
+(2) AlpaSim's `rig_to_camera` stores the **camera's pose in the rig** (`p_rig = R p_cam + t`),
+not the inverse — the first run put obstacles *behind* the ego (`nearest x=-2.2`).
+
+After the fix, scene 01d503d4, camera arm: depth median ~33 m (metric ✓), obstacles land **ahead**
+(`nearest x≈8–28`), and the result is **at_fault=0, offroad=0, progress=1.00, PASS** — matching the
+ground-truth arm on this scene (zero degradation here). transformers/torch are already in the
+image; the metric checkpoint downloads from HF (public) into the mounted cache.
+
+**This is the arm the whole project pointed at: a hard shield over a learned camera policy, its
+obstacle field also from the camera.** Toggles: `SHIELD_OBSTACLE_SOURCE=gt|camera`,
+`SHIELD_DEPTH_MODEL=<hf id>`.
+
+**Next — the degradation experiment (the headline the perception arm exists for):** sweep
+`SHIELD_OBSTACLE_SOURCE=camera` vs `gt` across the 8 scenes (`scene_sweep.sh` already runs GT;
+add a camera arm or an `shield_ab.sh SHIELD_OBSTACLE_SOURCE` run). The delta in at-fault rate is
+the number: *how much does the certificate degrade when perception is learned, not perfect?* One
+clean scene ≠ a result — mono depth is noisy at range, so expect the gap to open on scenes with
+distant lead vehicles.
+
+---
+
 ## ⊘ Rear-filter A/B — NEGATIVE result, and the real cause of the progress cost (2026-08-13)
 
 Implemented the finding-2 fix (`forward_relevant_field`, drop obstacle discs entirely behind
