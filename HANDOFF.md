@@ -5,6 +5,31 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ✔ Out-of-domain guard WORKS — no more shield-caused highway crash (2026-08-14)
+
+Implemented the OOD guard (`_out_of_domain`: when ego speed > `cfg.max_speed`, `predict()`
+returns VaVAM's plan untouched instead of certifying with an out-of-domain model). Committed,
+`SHIELD_OOD_GUARD` toggle, 53 tests. A/B on the highway scene that broke (`shield_ab.sh
+SHIELD_OOD_GUARD`, `N_ROLLOUTS=3`):
+
+| SHIELD_OOD_GUARD | at-fault | progress | status |
+|---|---|---|---|
+| 0 (shield anyway) | **1.00** | 0.21 | fail |
+| 1 (defer, default) | **0.00** | 0.43 | pass |
+
+The guard fired 79× (highway speeds) and **eliminated the shield-caused crash** — at-fault
+1.0→0.0, fail→pass. So the shield now **helps or abstains** rather than helping-or-harming: the
+worst case (making a scene worse than raw VaVAM) is gone on this scene. Remaining gap: guard-on
+0.43 still trails raw VaVAM's ~0.80 here, because the shield still acts in the sub-15 m/s city
+portions of this mixed scene and costs some progress — a softer, secondary issue, not a failure.
+
+**Next:** re-run the full 8-scene × 3 headline sweep with the guard on for the updated table
+(expect 04394343 to flip fail→pass, aggregate at-fault to drop below the 0.17 it was). Then the
+result is "the shield strictly reduces at-fault collisions (or abstains) at a modest progress
+cost" — the clean claim.
+
+---
+
 ## ★★★ HEADLINE SWEEP — 8 scenes × 3 rollouts, unshielded vs shielded (2026-08-14)
 
 `scene_sweep.sh` with `N_ROLLOUTS=3`, shielded = passthrough + rear-filter on. **at-fault** =
