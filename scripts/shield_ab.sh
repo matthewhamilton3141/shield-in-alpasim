@@ -11,6 +11,7 @@ cd ~/alpasim
 VAR="$1"; shift
 RESULTS=~/${VAR}_ab_results.csv
 N_ROLLOUTS=${N_ROLLOUTS:-1}   # rollouts per arm (>1 averages VaVAM's run-to-run variance)
+AB_VALUES="${AB_VALUES:-0 1}" # the two values of $VAR to compare (e.g. "gt camera")
 COMMON=(deploy=local topology=1gpu "runtime.simulation_config.n_rollouts=$N_ROLLOUTS" eval.video.video_layouts='[]')
 echo "scene,$VAR,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status" > "$RESULTS"
 
@@ -37,8 +38,8 @@ for S in "$@"; do
   CONT="/mnt/nre-data/${HOSTUSDZ#*/nre-artifacts/}"
   echo "  USDZ -> $CONT"
 
-  for V in 0 1; do
-    OUT=out_ab_${VAR}${V}_$S; rm -rf "$OUT"
+  for V in $AB_VALUES; do
+    OUT=out_ab_${VAR}_${V}_$S; rm -rf "$OUT"
     env SHIELD_SCENE_USDZ_IN_CONTAINER="$CONT" "$VAR=$V" \
       uv run alpasim_wizard "${COMMON[@]}" driver=shielded_vavam \
       wizard.log_dir="$PWD/$OUT" scenes.scene_ids="[$S]" > "$OUT.log" 2>&1
