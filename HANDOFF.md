@@ -5,6 +5,38 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ✔ Passthrough fix WORKS — recovers the tracker-drift progress loss (2026-08-14)
+
+Implemented passthrough (emit VaVAM's `ModelPrediction` verbatim when the shield rollout has 0
+interventions; else the tracked/braked trajectory). Committed, `SHIELD_PASSTHROUGH` toggle, 52
+tests. Same-session A/B (`scripts/shield_ab.sh SHIELD_PASSTHROUGH …`, off vs on):
+
+| scene | passthrough OFF (re-roll) | passthrough ON (verbatim) |
+|---|---|---|
+| 01d503d4 | 1.00 pass | 1.00 pass |
+| 0245ff75 | at-fault **fail**, 0.42 | rear, pass, 0.41 |
+| **026d6a39** | offroad **fail**, 0.37 | **pass, 0.88** |
+
+**On 026d6a39 passthrough recovered progress 0.37 → 0.88 and fail → pass** — confirming the
+loss was our tracker re-rolling VaVAM's path with lateral error and driving off-route. No safety
+regression: 01d503d4 still passes, and 0245ff75 even avoided the at-fault collision (rear
+instead). So the decorator now = VaVAM's own path fidelity when the shield is quiet, the
+shield's certified trajectory when it acts. This is the fix the whole tracker-drift arc pointed
+to. `SHIELD_REAR_FILTER` stays on too (sound, harmless).
+
+**Still noisy — VaVAM variance.** Single rollouts swing (026d6a39 off was 0.41-pass in the
+rear A/B, 0.37-offroad-fail here). The within-session off-vs-on A/B is the trustworthy read;
+absolute numbers need `n_rollouts>1`. **Ops note:** per-run docker networks leak and exhaust
+Docker's address pool (`all predefined address pools have been fully subnetted`) after ~dozens
+of runs — `docker container prune -f && docker network prune -f` between batches, and rm old
+`out_*` dirs (disk hit 94 %).
+
+**Next:** the clean headline result — a proper sweep (`n_rollouts=3–5`, ~8–10 scenes) of
+**unshielded vs shielded (passthrough+rear-filter on)** for the at-fault-collision rate and
+mean progress, now that the shielded arm drives properly. That table is the paper figure.
+
+---
+
 ## ⊘ Rear-filter A/B — NEGATIVE result, and the real cause of the progress cost (2026-08-13)
 
 Implemented the finding-2 fix (`forward_relevant_field`, drop obstacle discs entirely behind
