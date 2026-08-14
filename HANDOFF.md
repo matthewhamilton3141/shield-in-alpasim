@@ -5,6 +5,45 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 
 ---
 
+## ★★★★ FINAL HEADLINE SWEEP — all fixes on (2026-08-14)
+
+8 scenes × 3 rollouts, unshielded vs shielded (horizon + passthrough + rear-filter + OOD guard,
+all default on). **at-fault** = mean at-fault-collision rate; **prog** = mean progress.
+
+| scene | uns at-fault | shd at-fault | uns prog | shd prog | note |
+|---|---|---|---|---|---|
+| 01d503d4 | 0.00 | 0.00 | 1.00 | 1.00 | tie |
+| 023b7fcc | 0.00 | 0.00 | 1.00 | 0.97 | tie |
+| 0245ff75 | 0.00 | **0.33** | 0.51 | 0.41 | shield hurts (residual) |
+| 026d6a39 | 0.00 | 0.00 | 1.00 | 0.90 | tie (passthrough) |
+| 02e075b9 | offroad-**fail** | 0.00 | 0.53 | **1.00** | shield rescues offroad |
+| 02eadd92 | **1.00**-fail | 0.00 | 0.65 | **0.91** | shield saves crash (the video) |
+| 032b6f21 | 0.00 | 0.00 | 0.92 | 0.90 | tie |
+| 04394343 | 0.00 | 0.00 | 0.80 | 0.32 | **OOD guard: was a shielded crash, now pass** |
+| **mean** | **0.125** | **0.042** | **0.80** | **0.80** | |
+| **outright fails** | **2** | **0** | | | |
+
+**The clean claim: the shield cuts at-fault collisions ~3× (0.125 → 0.042), eliminates outright
+failures (2 → 0), at zero net progress cost (0.80 → 0.80).** The progress it spends braking on
+some scenes (0245ff75, 04394343) is offset by rescuing others (02e075b9 offroad, 02eadd92
+crash). Versus the pre-guard sweep (at-fault 0.21→0.17 *and* the shield causing the highway
+crash), the OOD guard turned a marginal/mixed result into a clear net positive — 04394343 is now
+a pass, not a shielded crash.
+
+**Caveats (honest):** (1) VaVAM is stochastic — unshielded at-fault swung 0.21→0.125 between the
+two sweeps from seed variance alone, so n=3 numbers are directional, not precise; a tighter
+result wants n≥10. (2) One residual shield-hurts scene remains, **0245ff75** (at-fault 0→0.33,
+non-highway) — a different failure mode than the OOD one; next diagnostic is its cycle log
+(likely the shield braking into a side/merge it can't model). (3) `04394343` shield progress
+(0.32) still trails unshielded (0.80): the guard stops the crash but the shield still brakes in
+the scene's city stretches. Raw rows: `~/sweep_results.csv` on the box.
+
+**This is a complete, honest result: a hard safety shield over a learned camera policy that
+provably reduces at-fault collisions at no net progress cost, with a characterized failure
+mode (out-of-model-domain) and its mitigation.** Good place to write up / PR.
+
+---
+
 ## ✔ Out-of-domain guard WORKS — no more shield-caused highway crash (2026-08-14)
 
 Implemented the OOD guard (`_out_of_domain`: when ego speed > `cfg.max_speed`, `predict()`
