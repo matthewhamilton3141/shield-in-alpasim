@@ -79,6 +79,16 @@ def test_passthrough_flag_is_honored():
     assert _driver(passthrough=True)._passthrough is True
 
 
+def test_out_of_domain_guard():
+    # kitti-nav max_speed is 15 m/s; above it the shield's model doesn't apply.
+    d = _driver(ood_guard=True)
+    assert d._out_of_domain(17.3) is True     # highway speed -> defer to the policy
+    assert d._out_of_domain(15.0) is False    # at the boundary the model still holds
+    assert d._out_of_domain(8.0) is False
+    # Disabled: never out of domain, the shield always acts.
+    assert _driver(ood_guard=False)._out_of_domain(30.0) is False
+
+
 def test_rollout_return_stats_exposes_interventions():
     from kitti_nav.vehicle import CircleField
 

@@ -80,6 +80,10 @@ REAR_FILTER_ENV_VAR = "SHIELD_REAR_FILTER"
 # acts when it must). Set SHIELD_PASSTHROUGH=0 to always emit our tracked re-roll instead.
 PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
 
+# Defer to the inner policy when the ego is faster than the shield's model represents (its
+# kinematic model clamps speed to max_speed). Set SHIELD_OOD_GUARD=0 to shield anyway.
+OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -171,6 +175,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         inner_model=None,
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
+        ood_guard: bool | None = None,
     ):
         self._cfg = cfg
         # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
@@ -186,6 +191,12 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         self._passthrough = (
             os.environ.get(PASSTHROUGH_ENV_VAR, "1") != "0" if passthrough is None
             else passthrough
+        )
+        # Defer to the inner policy when the ego is out of the shield's speed domain (see
+        # `_out_of_domain`). On by default; `SHIELD_OOD_GUARD=0` disables it.
+        self._ood_guard = (
+            os.environ.get(OOD_GUARD_ENV_VAR, "1") != "0" if ood_guard is None
+            else ood_guard
         )
         self._camera_ids = list(camera_ids)
         self._context_length = context_length
@@ -352,6 +363,17 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         prediction = self._inner_model.predict(prediction_input)
         return np.asarray(prediction.selected_positions, dtype=float)[:, :2]
 
+    def _out_of_domain(self, speed: float) -> bool:
+        """True when the ego is faster than the shield's kinematic model represents.
+
+        `step_state` clamps speed to `max_speed`, so above it the shield's stopping-distance
+        reasoning (`v²/2a`) is computed for a *slower* car than reality — it under-estimates
+        the distance needed and hard-brakes into collisions a faster policy would steer around
+        (measured: it turned the highway scene 04394343 from VaVAM's pass into a shielded
+        crash). Out of domain, the sound move is to abstain, not to act on a wrong model.
+        """
+        return self._ood_guard and float(speed) > self._cfg.max_speed
+
     def predict(self, prediction_input: "PredictionInput") -> "ModelPrediction":
         self._validate_cameras(prediction_input.camera_images)
         obstacles = self._obstacles_for(prediction_input)
@@ -363,6 +385,15 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
         # Decorator path: track the inner plan, run it through the shield.
         inner_prediction = self._inner_model.predict(prediction_input)
+
+        # Out-of-domain guard: above the shield's modelled speed, defer to the inner policy
+        # untouched rather than certify with a model that does not apply (see `_out_of_domain`).
+        if self._out_of_domain(prediction_input.speed):
+            logger.info(
+                "shield out-of-domain: ego %.1f m/s > max_speed %.1f — passing inner plan through",
+                float(prediction_input.speed), self._cfg.max_speed,
+            )
+            return inner_prediction
         proposed = np.asarray(inner_prediction.selected_positions, dtype=float)[:, :2]
         policy = make_tracking_policy(proposed, 1.0 / self._output_frequency_hz, self._cfg)
         # Emit at least the inner model's own horizon as well as the MPC's: a shorter output
