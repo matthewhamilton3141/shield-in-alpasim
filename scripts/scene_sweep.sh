@@ -15,7 +15,8 @@ cd ~/alpasim
 
 CKPT=/mnt/drivers/vavam/VAM_width_768_pretrained_139k.pt
 RESULTS=~/sweep_results.csv
-COMMON=(deploy=local topology=1gpu runtime.simulation_config.n_rollouts=1 eval.video.video_layouts='[]')
+N_ROLLOUTS=${N_ROLLOUTS:-1}   # rollouts per scene per arm (>1 averages VaVAM's run-to-run variance)
+COMMON=(deploy=local topology=1gpu "runtime.simulation_config.n_rollouts=$N_ROLLOUTS" eval.video.video_layouts='[]')
 echo "scene,arm,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status" > "$RESULTS"
 
 # Pull the eval summary into one CSV row; empty fields if the run produced no summary.
@@ -31,6 +32,10 @@ PY
 
 for S in "$@"; do
   echo "======== SCENE $S ========"
+  # Per-run docker networks leak and eventually exhaust Docker's address pool ("all predefined
+  # address pools have been fully subnetted"). Reclaim them between scenes so a long sweep
+  # doesn't die partway. Safe: prune only removes stopped containers / unused networks.
+  docker container prune -f >/dev/null 2>&1; docker network prune -f >/dev/null 2>&1
 
   # (1) unshielded — downloads the artifact + builds the sceneset
   OUT=out_sw_van_$S
