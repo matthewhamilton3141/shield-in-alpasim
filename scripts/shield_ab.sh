@@ -10,7 +10,8 @@ export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH
 cd ~/alpasim
 VAR="$1"; shift
 RESULTS=~/${VAR}_ab_results.csv
-COMMON=(deploy=local topology=1gpu runtime.simulation_config.n_rollouts=1 eval.video.video_layouts='[]')
+N_ROLLOUTS=${N_ROLLOUTS:-1}   # rollouts per arm (>1 averages VaVAM's run-to-run variance)
+COMMON=(deploy=local topology=1gpu "runtime.simulation_config.n_rollouts=$N_ROLLOUTS" eval.video.video_layouts='[]')
 echo "scene,$VAR,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status" > "$RESULTS"
 
 metric() {
@@ -25,6 +26,7 @@ PY
 
 for S in "$@"; do
   echo "======== SCENE $S ========"
+  docker container prune -f >/dev/null 2>&1; docker network prune -f >/dev/null 2>&1
   PREP=out_ab_prep_$S; rm -rf "$PREP"
   uv run alpasim_wizard "${COMMON[@]}" driver=shielded_vavam wizard.run_method=NONE \
       wizard.log_dir="$PWD/$PREP" scenes.scene_ids="[$S]" > "$PREP.log" 2>&1
