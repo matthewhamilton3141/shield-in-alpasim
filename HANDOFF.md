@@ -142,6 +142,48 @@ mean progress, now that the shielded arm drives properly. That table is the pape
 
 ---
 
+## ★★★★★ DEGRADATION SWEEP — learned perception ≈ ground truth (2026-08-14)
+
+The headline of the perception arm. 8 scenes × 3 rollouts, both shielded, obstacle field from
+**ground-truth geometry** vs **camera monocular metric depth** (`shield_ab.sh SHIELD_OBSTACLE_SOURCE`,
+`AB_VALUES="gt camera"`). **at-fault** = mean at-fault rate; **prog** = mean progress.
+
+| scene | gt at-fault | cam at-fault | gt prog | cam prog |
+|---|---|---|---|---|
+| 01d503d4 | 0.00 | 0.00 | 1.00 | 1.00 |
+| 023b7fcc | 0.00 | 0.00 | 0.97 | 1.00 |
+| 0245ff75 | 0.33 | 0.00 | 0.41 | 0.46 |
+| 026d6a39 | 0.00 | 0.00 | 0.88 | 0.92 |
+| 02e075b9 | 0.00 | 0.00 | 1.00 | 1.00 |
+| 02eadd92 | 0.33 | 0.00 | 0.81 | 0.96 |
+| 032b6f21 | 0.00 | 0.00 | 0.87 | **0.59** |
+| 04394343 | 0.00 | 0.00 | 0.49 | **0.38** |
+| **mean** | **0.083** | **0.000** | **0.80** | **0.79** |
+
+**The certificate barely degrades under learned perception.** Swapping perfect geometry for
+monocular metric depth (Depth Anything V2 Metric Outdoor) leaves at-fault collisions **0.083 → 0.0**
+and progress **0.80 → 0.79** — essentially no change, the *opposite* of the feared big
+degradation. That's the result: with a good modern metric-depth model, the hard shield's guarantee
+holds up on these scenes about as well as with ground truth.
+
+**Read it honestly:**
+- **This is within VaVAM noise.** n=3 and the policy is stochastic, so the per-scene deltas
+  (camera "better" on 0245ff75/02eadd92, worse on 032b6f21/04394343) are mostly noise, not signal.
+  The safe claim is *no systematic degradation observed*, not *camera beats GT*.
+- **Where camera does lose, it loses progress, not safety** — 032b6f21 (0.87→0.59) and 04394343
+  (0.49→0.38): mono depth produces phantom/near obstacles → extra braking → less progress, never
+  a collision. The failure direction is conservative, which is the right direction for a shield.
+- **Not adversarial enough to break it.** These are daytime sample scenes; the degradation the
+  method is meant to expose (miss a distant lead car → collision) needs harder cases: night, rain,
+  glare, fast highway lead vehicles. And n≥10 to pull signal out of VaVAM's variance.
+
+**So the full result now exists end-to-end:** a hard safety shield over a learned camera policy,
+with a **camera-derived** obstacle field, that reduces/holds at-fault collisions at ~no progress
+cost — and a first measurement that a modern metric-depth front-end does not meaningfully erode
+the guarantee on these scenes. Raw rows: `~/SHIELD_OBSTACLE_SOURCE_ab_results.csv`.
+
+---
+
 ## ★ CAMERA-PERCEPTION ARM RUNS — the shield brakes for what the camera sees (2026-08-14)
 
 The learned-perception arm is wired and **validated end-to-end on the box**. `SHIELD_OBSTACLE_SOURCE=camera`
