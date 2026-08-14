@@ -71,9 +71,16 @@ def test_occupancy_range_filter_and_empty():
     assert len(occupancy_to_circles(far, 0.5, 40, 5)) == 0  # all beyond max_range
 
 
-def _fake_prediction_input(depth, cam="camera_front_wide_120fov"):
-    frame = type("F", (), {"image": depth})()
+def _fake_prediction_input(depth, cam="camera_front_wide_120fov", as_tuple=False):
+    # The real servicer sends plain (timestamp_us, image) tuples, not objects with `.image`.
+    frame = (123, depth) if as_tuple else type("F", (), {"image": depth})()
     return type("PI", (), {"camera_images": {cam: [frame]}})()
+
+
+def test_frame_image_handles_tuple_and_object():
+    from shield_in_alpasim.obstacle_source import CameraObstacleSource as C
+    assert C._frame_image((123, "img")) == "img"
+    assert C._frame_image(type("F", (), {"image": "img"})()) == "img"
 
 
 def test_intrinsics_rescale_with_resolution():

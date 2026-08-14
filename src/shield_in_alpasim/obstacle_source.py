@@ -194,9 +194,20 @@ class CameraObstacleSource:
             FRONT_WIDE_RIG_TO_CAMERA, ref_hw=FRONT_WIDE_REF_HW, **kwargs,
         )
 
+    @staticmethod
+    def _frame_image(frame):
+        """The HWC image out of a frame, whether it's a `CameraFrame(timestamp, image)`
+        namedtuple, a plain `(timestamp, image)` tuple (what the servicer actually sends), or a
+        bare array."""
+        if hasattr(frame, "image"):
+            return frame.image
+        if isinstance(frame, tuple):
+            return frame[1]  # (timestamp_us, image)
+        return frame
+
     def field_for(self, prediction_input) -> CircleField:
         frames = prediction_input.camera_images[self._camera_id]
-        depth = np.asarray(self._depth(frames[-1].image), float)
+        depth = np.asarray(self._depth(self._frame_image(frames[-1])), float)
         fx, fy, cx, cy = self._intrinsics_for(*depth.shape[:2])
         pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
         pts_rig = camera_to_rig(pts_cam, self._R, self._t)
