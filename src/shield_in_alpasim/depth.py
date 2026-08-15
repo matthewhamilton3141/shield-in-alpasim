@@ -36,12 +36,25 @@ class HFDepthModel:
         logger.info("loading depth model %s on %s", model_name, "cuda" if dev == 0 else "cpu")
         self._pipe = pipeline("depth-estimation", model=model_name, device=dev)
 
-    def __call__(self, image) -> np.ndarray:
+    def __call__(self, image):
+        """`HWC image -> (H, W) metric depth`. A *list* of images runs one batched pipeline call
+        and returns a list of depth maps — the surround source's cost lever (N cameras, one pass
+        instead of N; see `MultiCameraObstacleSource`)."""
+        if isinstance(image, list):
+            pils = [self._to_pil(im) for im in image]
+            outs = self._pipe(pils)
+            return [self._to_metric(o, np.asarray(im).shape[:2]) for o, im in zip(outs, image)]
+        arr = np.asarray(image)
+        return self._to_metric(self._pipe(self._to_pil(image)), arr.shape[:2])
+
+    @staticmethod
+    def _to_pil(image):
         from PIL import Image
 
         arr = np.asarray(image)
-        pil = Image.fromarray(arr.astype("uint8")) if arr.ndim == 3 else image
-        out = self._pipe(pil)
+        return Image.fromarray(arr.astype("uint8")) if arr.ndim == 3 else image
+
+    def _to_metric(self, out, hw) -> np.ndarray:
         # The pipeline returns raw model output in `predicted_depth` (metric for the metric
         # variants); `depth` is a normalised PIL image for visualisation, not metric — use the
         # tensor. Resize to the input resolution (the model runs at its own internal size).
@@ -51,6 +64,6 @@ class HFDepthModel:
         d = d.detach().float().cpu()
         while d.dim() < 4:
             d = d.unsqueeze(0)
-        h, w = arr.shape[:2]
+        h, w = hw
         d = t.nn.functional.interpolate(d, size=(h, w), mode="bilinear", align_corners=False)
         return d.squeeze().numpy().astype(np.float32)

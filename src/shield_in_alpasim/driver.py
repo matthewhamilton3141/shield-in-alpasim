@@ -23,6 +23,8 @@ see ATTRIBUTION.md.
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import logging
 import os
 
@@ -85,8 +87,19 @@ PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
 OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
 
 # Where the shield's obstacle field comes from: `gt` (default; ground-truth scene geometry) or
-# `camera` (learned metric-depth perception over the front camera — the degradation experiment).
+# `camera` (learned metric-depth perception over the advertised cameras — the degradation
+# experiment; one front camera, or the full surround rig when several are advertised).
 OBSTACLE_SOURCE_ENV_VAR = "SHIELD_OBSTACLE_SOURCE"
+
+# Which of the advertised (perception) cameras the *inner policy* consumes, comma-separated. We
+# advertise ALL perception cameras so AlpaSim renders the sides/rear for the shield, but the inner
+# policy (e.g. VaVAM) validates against exactly its own set, so it must be handed only these. Unset
+# -> the policy sees every advertised camera (the single-camera case, unchanged).
+POLICY_CAMERAS_ENV_VAR = "SHIELD_POLICY_CAMERAS"
+
+# Batch the N surround depth forward passes into one call (see MultiCameraObstacleSource). Off by
+# default; SHIELD_DEPTH_BATCH=1 enables it as the cost lever for the 4× multicam depth budget.
+DEPTH_BATCH_ENV_VAR = "SHIELD_DEPTH_BATCH"
 
 # If set, dump per-cycle perceived (camera) vs true (GT) obstacle discs here for BEV visualisation
 # (scripts/make_bev_video.py). Off by default — pure debug instrumentation, no effect on driving.
@@ -126,6 +139,17 @@ def _coast(_state) -> tuple[float, float]:
     point of the "the shield needs a policy" caveat in HANDOFF.md.
     """
     return 0.0, 0.0
+
+
+def _with_camera_images(prediction_input, images):
+    """A copy of `prediction_input` with `camera_images` replaced — for handing the inner policy
+    only its own cameras. Uses `dataclasses.replace` for AlpaSim's frozen `PredictionInput`,
+    falling back to a shallow copy + attribute set for anything else (test fakes)."""
+    if dataclasses.is_dataclass(prediction_input) and not isinstance(prediction_input, type):
+        return dataclasses.replace(prediction_input, camera_images=images)
+    clone = copy.copy(prediction_input)
+    clone.camera_images = images
+    return clone
 
 
 def rollout_diagnostics(field, state0: VehicleState, cfg: VehicleConfig, policy) -> dict:
@@ -182,6 +206,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         scene_source: SceneObstacleSource | None = None,
         obstacle_source=None,
         inner_model=None,
+        policy_camera_ids: list[str] | None = None,
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
         ood_guard: bool | None = None,
@@ -208,6 +233,12 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             else ood_guard
         )
         self._camera_ids = list(camera_ids)
+        # The cameras the inner policy consumes — a subset of the advertised perception cameras.
+        # None -> all of them (single-camera case). The shield perceives from all advertised
+        # cameras; the policy is handed only its own (see `_policy_input`, `POLICY_CAMERAS_ENV_VAR`).
+        self._policy_camera_ids = (
+            list(camera_ids) if policy_camera_ids is None else list(policy_camera_ids)
+        )
         self._context_length = context_length
         self._output_frequency_hz = output_frequency_hz
         # Emit enough waypoints to span `horizon_s` at the output rate, so the trajectory
@@ -249,20 +280,43 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         if scene_source is not None and scene_source.ego_vehicle_config is not None:
             cfg = scene_source.ego_vehicle_config
 
+        # `camera_ids` is every camera AlpaSim delivers (all perception cameras). The inner policy
+        # gets only its subset so its own `_validate_cameras` passes; the shield perceives from all.
+        policy_camera_ids = cls._resolve_policy_cameras(camera_ids)
         inner_model = cls._build_inner_model(
-            model_cfg, device, camera_ids, context_length, output_frequency_hz
+            model_cfg, device, policy_camera_ids, context_length, output_frequency_hz
         )
         obstacle_source = cls._build_obstacle_source(device, camera_ids)
 
         return cls(
             cfg=cfg,
             camera_ids=camera_ids,
+            policy_camera_ids=policy_camera_ids,
             context_length=context_length or 1,
             output_frequency_hz=output_frequency_hz,
             scene_source=scene_source,
             obstacle_source=obstacle_source,
             inner_model=inner_model,
         )
+
+    @staticmethod
+    def _resolve_policy_cameras(camera_ids) -> list[str]:
+        """The inner policy's cameras, from `$SHIELD_POLICY_CAMERAS` (comma-separated), or all of
+        `camera_ids` when unset. Every named camera must actually be advertised, or the policy
+        would ask for a frame AlpaSim never renders."""
+        raw = os.environ.get(POLICY_CAMERAS_ENV_VAR, "").strip()
+        if not raw:
+            return list(camera_ids)
+        cams = [c.strip() for c in raw.split(",") if c.strip()]
+        missing = [c for c in cams if c not in camera_ids]
+        if missing:
+            raise ValueError(
+                f"{POLICY_CAMERAS_ENV_VAR}={raw!r} names cameras not advertised in "
+                f"use_cameras {list(camera_ids)}: {missing}"
+            )
+        logger.info("Policy cameras %s of advertised %s (shield perceives from all)",
+                    cams, list(camera_ids))
+        return cams
 
     @staticmethod
     def _build_obstacle_source(device, camera_ids):
@@ -281,11 +335,24 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             raise ValueError(f"{OBSTACLE_SOURCE_ENV_VAR}={kind!r}; expected 'gt' or 'camera'.")
 
         from shield_in_alpasim.depth import DEFAULT_MODEL, HFDepthModel
-        from shield_in_alpasim.obstacle_source import CameraObstacleSource
+        from shield_in_alpasim.obstacle_source import (
+            CameraObstacleSource,
+            MultiCameraObstacleSource,
+        )
 
         model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
-        logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)
         depth_model = HFDepthModel(model_name, device=str(device))
+        # Several advertised cameras -> the surround rig fuses them all into one field; a single
+        # camera -> the original front-only source. Perception uses every advertised camera,
+        # regardless of which subset the inner policy consumes.
+        if len(camera_ids) > 1:
+            batched = os.environ.get(DEPTH_BATCH_ENV_VAR, "0") == "1"
+            logger.info(
+                "Obstacle field from SURROUND camera perception (%d cams %s, depth %s, batched=%s)",
+                len(camera_ids), list(camera_ids), model_name, batched)
+            return MultiCameraObstacleSource.surround(
+                depth_model, list(camera_ids), batched=batched)
+        logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)
         return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0])
 
     @staticmethod
@@ -417,6 +484,24 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             xy[t] = states[min((t + 1) * substeps_per_waypoint, len(states) - 1)].xy
         return (xy, stats) if return_stats else xy
 
+    def _policy_input(self, prediction_input):
+        """`prediction_input` with `camera_images` narrowed to the inner policy's cameras.
+
+        We advertise all perception cameras so AlpaSim renders the sides/rear for the shield, but
+        the inner policy validates against exactly its own set (`_validate_cameras`), so it must
+        not see the extras. A no-op when the policy already consumes every advertised camera (the
+        single-camera case).
+        """
+        images = getattr(prediction_input, "camera_images", None)
+        if not images or set(self._policy_camera_ids) == set(images):
+            return prediction_input
+        filtered = {c: images[c] for c in self._policy_camera_ids if c in images}
+        return _with_camera_images(prediction_input, filtered)
+
+    def _inner_predict(self, prediction_input):
+        """Run the inner policy on its own cameras only (see `_policy_input`)."""
+        return self._inner_model.predict(self._policy_input(prediction_input))
+
     def _proposed_waypoints(self, prediction_input) -> np.ndarray | None:
         """Ground-plane `(T, 2)` waypoints from the inner policy, or None when coasting.
 
@@ -426,7 +511,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         """
         if self._inner_model is None:
             return None
-        prediction = self._inner_model.predict(prediction_input)
+        prediction = self._inner_predict(prediction_input)
         return np.asarray(prediction.selected_positions, dtype=float)[:, :2]
 
     def _out_of_domain(self, speed: float) -> bool:
@@ -442,6 +527,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
     def predict(self, prediction_input: "PredictionInput") -> "ModelPrediction":
         self._validate_cameras(prediction_input.camera_images)
+        # Which cameras actually arrived — the surround smoke check (are the side/rear cameras
+        # being delivered, or did AlpaSim only render the policy's front cam?). One line per cycle.
+        logger.info("cameras delivered: %s (policy uses %s)",
+                    sorted(prediction_input.camera_images), self._policy_camera_ids)
         obstacles = self._obstacles_for(prediction_input)
 
         # Coasting baseline (no inner policy): shield-filter a go-straight command.
@@ -449,8 +538,9 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             xy = self._rollout(prediction_input.speed, obstacles, None)
             return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
 
-        # Decorator path: track the inner plan, run it through the shield.
-        inner_prediction = self._inner_model.predict(prediction_input)
+        # Decorator path: track the inner plan, run it through the shield. The inner policy sees
+        # only its own cameras (`_inner_predict`), even though the shield perceives from all.
+        inner_prediction = self._inner_predict(prediction_input)
 
         # Out-of-domain guard: above the shield's modelled speed, defer to the inner policy
         # untouched rather than certify with a model that does not apply (see `_out_of_domain`).
@@ -483,6 +573,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
     @property
     def camera_ids(self) -> list[str]:
         return self._camera_ids
+
+    @property
+    def policy_camera_ids(self) -> list[str]:
+        return self._policy_camera_ids
 
     @property
     def context_length(self) -> int:

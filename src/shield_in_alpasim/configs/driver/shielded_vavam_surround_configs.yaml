@@ -1,0 +1,143 @@
+# @package _global_
+# Global config for `driver=shielded_vavam_surround`: the shield wrapping VaVAM, but perceiving
+# from the full 4-camera SURROUND rig instead of the front camera alone.
+#
+# Same two halves as shielded_vavam_configs.yaml, with two differences that make it surround:
+#   1. FOUR cameras are rendered + advertised (front, cross-left, cross-right, rear), with their
+#      calibration in `extra_cameras`, so AlpaSim delivers the sides + rear to the driver — the
+#      shield's camera obstacle source fuses all of them (driver.py `_build_obstacle_source` picks
+#      MultiCameraObstacleSource when >1 camera is advertised). The single-front-cam arm was blind
+#      to lateral/rear threats (docs/MULTICAM_HANDOFF.md).
+#   2. `SHIELD_POLICY_CAMERAS=camera_front_wide_120fov` — VaVAM validates against exactly its one
+#      camera, so the driver hands the inner policy only the front frame while the shield perceives
+#      from all four (driver.py `_policy_input`).
+#
+# The 4-camera block below is inlined verbatim from AlpaSim's transfuser_configs.yaml (the
+# canonical 4-camera calibration); the perception constants in obstacle_source.py (SURROUND_*)
+# match it. Restated in full because OmegaConf replaces lists on merge.
+
+# ---- (1) surround cameras (4-camera rig, from transfuser_configs.yaml) ----
+runtime:
+  simulation_config:
+    force_gt_duration_us: 3_000_000
+    n_sim_steps: 100
+    n_rollouts: 1
+    control_timestep_us: 500_000
+    ego_mask_rig_config_id: null
+
+    cameras:
+      - height: 1080
+        width: 1920
+        logical_id: camera_cross_left_120fov
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - height: 1080
+        width: 1920
+        logical_id: camera_front_wide_120fov
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - height: 1080
+        width: 1920
+        logical_id: camera_cross_right_120fov
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - height: 1080
+        width: 1920
+        logical_id: camera_rear_left_70fov
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+
+  extra_cameras:
+    - logical_id: camera_cross_left_120fov
+      rig_to_camera:
+        translation_m: [1.646354, 0.143369, 1.521469]
+        rotation_xyzw: [0.679354, -0.207915, 0.215233, -0.670018]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    - logical_id: camera_front_wide_120fov
+      rig_to_camera:
+        translation_m: [1.670100, -0.025875, 1.522623]
+        rotation_xyzw: [0.509222, -0.503331, 0.495086, -0.492180]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    - logical_id: camera_cross_right_120fov
+      rig_to_camera:
+        translation_m: [1.626168, -0.161517, 1.526269]
+        rotation_xyzw: [0.205424, -0.674057, 0.676355, -0.214458]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+    - logical_id: camera_rear_left_70fov
+      rig_to_camera:
+        translation_m: [-0.486641, -0.000595, 1.486321]
+        rotation_xyzw: [0.503851, 0.497823, -0.499723, -0.498582]
+      intrinsics:
+        model: opencv_pinhole
+        opencv_pinhole:
+          focal_length: [1545.0, 1545.0]
+          principal_point: [960.0, 560.0]
+          radial: [-0.356123, 0.172545, -0.052310, 0.0, 0.0, 0.0]
+          tangential: [-0.002130, 0.000464]
+          thin_prism: [0.0, 0.0, 0.0, 0.0]
+      resolution_hw: [1080, 1920]
+      shutter_type: ROLLING_TOP_TO_BOTTOM
+
+# ---- (2) driver-container wiring (shield + VaVAM inner policy, surround perception) ----
+services:
+  driver:
+    replicas_per_container: 1
+    volumes:
+      - "${defines.drivers}:/mnt/drivers"                 # holds /mnt/drivers/vavam/<ckpt,tokenizer>
+      - "${wizard.log_dir}:/mnt/output"
+      - "${repo-relative:'src'}:/repo/src"
+      - "${repo-relative:'plugins'}:/repo/plugins"
+      - "${defines.hf_cache}:/root/.cache/huggingface"
+      - "${scenes.scene_cache}:/mnt/nre-data"             # shield reads GT geometry from the usdz
+      - "${oc.env:SHIELD_SRC,${oc.env:HOME}/shield-in-alpasim}:/mnt/shield"
+      - "${oc.env:KITTI_NAV_SRC,${oc.env:HOME}/kitti-nav/src}:/mnt/kitti-nav-src"
+    environments:
+      - "PYTHONPATH=/mnt/kitti-nav-src"
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+      - "SHIELD_INNER_MODEL=vam"
+      # VaVAM validates against its single front camera; the shield perceives from all four.
+      - "SHIELD_POLICY_CAMERAS=${oc.env:SHIELD_POLICY_CAMERAS,camera_front_wide_120fov}"
+      - "SHIELD_REAR_FILTER=${oc.env:SHIELD_REAR_FILTER,1}"
+      - "SHIELD_PASSTHROUGH=${oc.env:SHIELD_PASSTHROUGH,1}"
+      - "SHIELD_OOD_GUARD=${oc.env:SHIELD_OOD_GUARD,1}"
+      # This config exists FOR surround perception, so default the source to camera (still
+      # overridable to gt for an A/B of the surround geometry against ground truth).
+      - "SHIELD_OBSTACLE_SOURCE=${oc.env:SHIELD_OBSTACLE_SOURCE,camera}"
+      - "SHIELD_DEPTH_MODEL=${oc.env:SHIELD_DEPTH_MODEL,depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf}"
+      # 4 cameras = 4× depth passes/cycle; SHIELD_DEPTH_BATCH=1 runs them as one batched call.
+      - "SHIELD_DEPTH_BATCH=${oc.env:SHIELD_DEPTH_BATCH,0}"
+      - "SHIELD_DEBUG_DIR=${oc.env:SHIELD_DEBUG_DIR,}"
+    command:
+      - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
+      - "uv run -m alpasim_driver.main"
+      - "--config-path=/mnt/output"
+      - "--config-name=driver-config.yaml"
+      - "host=0.0.0.0"
+      - "port={port}"

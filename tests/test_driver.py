@@ -126,6 +126,137 @@ def test_rollout_honors_a_horizon_override():
     assert d._rollout(initial_speed=5.0, horizon_steps=25).shape == (25, 2)
 
 
+# --- surround: advertise all cameras for perception, hand the policy only its own ---
+
+SURROUND = ["camera_cross_left_120fov", "camera_front_wide_120fov",
+            "camera_cross_right_120fov", "camera_rear_left_70fov"]
+
+
+def test_policy_cameras_default_to_all_advertised():
+    # Single-camera / no split: the policy sees every advertised camera, unchanged behaviour.
+    assert _driver().policy_camera_ids == CAMERAS
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2, horizon_steps=6)
+    assert d.policy_camera_ids == SURROUND
+
+
+def test_resolve_policy_cameras_from_env(monkeypatch):
+    monkeypatch.setenv("SHIELD_POLICY_CAMERAS", "camera_front_wide_120fov")
+    assert ShieldedDriver._resolve_policy_cameras(SURROUND) == ["camera_front_wide_120fov"]
+    # Unset -> everything advertised.
+    monkeypatch.delenv("SHIELD_POLICY_CAMERAS", raising=False)
+    assert ShieldedDriver._resolve_policy_cameras(SURROUND) == SURROUND
+
+
+def test_resolve_policy_cameras_rejects_unadvertised(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("SHIELD_POLICY_CAMERAS", "camera_front_wide_120fov,camera_not_rendered")
+    with pytest.raises(ValueError):
+        ShieldedDriver._resolve_policy_cameras(SURROUND)
+
+
+class _FakeInput:
+    """Stand-in for AlpaSim's PredictionInput: just carries a camera_images dict."""
+
+    def __init__(self, camera_images):
+        self.camera_images = camera_images
+
+
+def test_policy_input_narrows_cameras_to_the_inner_policy():
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2,
+                       horizon_steps=6, policy_camera_ids=["camera_front_wide_120fov"])
+    pi = _FakeInput({c: [(0, np.zeros((2, 2)))] for c in SURROUND})
+    narrowed = d._policy_input(pi)
+    assert set(narrowed.camera_images) == {"camera_front_wide_120fov"}  # only the policy's cam
+    assert set(pi.camera_images) == set(SURROUND)                        # original untouched
+
+
+def test_policy_input_is_identity_when_policy_uses_all_cameras():
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2, horizon_steps=6)
+    pi = _FakeInput({c: [] for c in SURROUND})
+    assert d._policy_input(pi) is pi  # no copy when there's nothing to filter
+
+
+def test_with_camera_images_copies_without_mutating():
+    from shield_in_alpasim.driver import _with_camera_images
+
+    pi = _FakeInput({"a": [1], "b": [2]})
+    clone = _with_camera_images(pi, {"a": [1]})
+    assert clone is not pi
+    assert set(clone.camera_images) == {"a"}
+    assert set(pi.camera_images) == {"a", "b"}  # original dict untouched
+
+
+def test_with_camera_images_uses_replace_on_a_frozen_dataclass():
+    # AlpaSim's PredictionInput is a frozen dataclass, so copy+setattr would raise; the
+    # dataclasses.replace branch must fire and preserve the other fields. This is the path that
+    # actually runs on the box (the plain-object test above only covers test fakes).
+    import dataclasses
+
+    from shield_in_alpasim.driver import _with_camera_images
+
+    @dataclasses.dataclass(frozen=True)
+    class FrozenInput:
+        camera_images: dict
+        speed: float
+
+    pi = FrozenInput({"a": [1], "b": [2]}, speed=7.5)
+    clone = _with_camera_images(pi, {"a": [1]})
+    assert clone is not pi
+    assert set(clone.camera_images) == {"a"}
+    assert clone.speed == 7.5                       # untouched sibling field survives
+    assert set(pi.camera_images) == {"a", "b"}      # original still intact (frozen, unmutated)
+
+
+def test_policy_input_narrows_a_frozen_prediction_input():
+    # End to end through _policy_input with a frozen dataclass standing in for PredictionInput.
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class FrozenInput:
+        camera_images: dict
+        speed: float
+
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2,
+                       horizon_steps=6, policy_camera_ids=["camera_front_wide_120fov"])
+    pi = FrozenInput({c: [(0, np.zeros((2, 2)))] for c in SURROUND}, speed=3.0)
+    narrowed = d._policy_input(pi)
+    assert set(narrowed.camera_images) == {"camera_front_wide_120fov"}
+    assert narrowed.speed == 3.0
+
+
+def test_surround_config_and_perception_constants_agree():
+    # The config renders/advertises/calibrates a set of cameras; the perception source hardcodes
+    # their calibration (from_config never receives extra_cameras). They MUST name the same
+    # cameras and carry the same poses, or the shield would perceive with a calibration that
+    # doesn't match what the renderer produced — a silent, box-only geometry bug. Cross-check here.
+    import pathlib
+
+    import yaml
+
+    from shield_in_alpasim.obstacle_source import SURROUND_RIG_TO_CAMERA
+
+    cfg_dir = pathlib.Path(__file__).resolve().parent.parent / \
+        "src/shield_in_alpasim/configs/driver"
+    glob = yaml.safe_load((cfg_dir / "shielded_vavam_surround_configs.yaml").read_text())
+    drv = yaml.safe_load((cfg_dir / "shielded_vavam_surround.yaml").read_text())
+
+    rendered = {c["logical_id"] for c in glob["runtime"]["simulation_config"]["cameras"]}
+    extra = {c["logical_id"]: c for c in glob["runtime"]["extra_cameras"]}
+    advertised = set(drv["inference"]["use_cameras"])
+
+    # Every camera is rendered, advertised, calibrated in the config, and known to perception.
+    assert rendered == advertised == set(extra) == set(SURROUND_RIG_TO_CAMERA)
+    # VaVAM's front camera is actually advertised (or the policy would ask for a missing frame).
+    assert "camera_front_wide_120fov" in advertised
+
+    # The config's extra_cameras poses match the perception constants exactly (one source).
+    for cid, want in SURROUND_RIG_TO_CAMERA.items():
+        got = extra[cid]["rig_to_camera"]
+        assert got["translation_m"] == want["translation_m"], cid
+        assert got["rotation_xyzw"] == want["rotation_xyzw"], cid
+
+
 def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     driver = ShieldedDriver.from_config(
         model_cfg=None, device="cpu", camera_ids=CAMERAS, context_length=None, output_frequency_hz=4

@@ -4,6 +4,38 @@ Self-contained handoff to give the shield a multi-camera (surround) obstacle fie
 single front camera. Pick this up cold. The living session log is `../HANDOFF.md`; this is the
 focused plan for one job.
 
+---
+
+## ✔ OFF-METER CODE DONE (2026-08-14, Mac) — steps 1–4 built + unit-tested; box does step 5 only
+
+The whole surround plumbing is written and green on the Mac (73 tests, +20 for this arm). No GPU
+was touched — what remains is box **verification**, not building. What landed:
+
+- **Multi-camera source** (`obstacle_source.py`): `MultiCameraObstacleSource` fuses N cameras'
+  depth into one rig-frame field (per-camera back-project → `camera_to_rig` → union → one
+  height-band + occupancy). `CameraCalib` holds per-camera intrinsics/extrinsics; `.surround(...)`
+  builds the 4-cam rig from new `SURROUND_*` constants (the transfuser 4-camera calibration, which
+  the surround config's `extra_cameras` also uses — one source). Tested: front+rear blobs land
+  ahead **and** behind in one field (the win the front-only source can't get).
+- **Camera plumbing** (`driver.py`): advertise ALL perception cameras (`camera_ids`), hand the
+  inner policy only its subset. `SHIELD_POLICY_CAMERAS` (env) names the policy's cameras;
+  `_policy_input` narrows `camera_images` before `inner.predict()` so VaVAM's `_validate_cameras`
+  passes; `_build_obstacle_source` picks the surround source when >1 camera is advertised. `predict`
+  logs **which cameras were actually delivered** each cycle — the step-1 smoke check, baked in.
+- **Depth batching** (`depth.py`): `HFDepthModel(...)` now also accepts a *list* of frames → one
+  batched forward pass. Off by default; `SHIELD_DEPTH_BATCH=1` (surround config passes it through)
+  enables it — the cost lever for the 4× depth budget.
+- **Config**: `driver=shielded_vavam_surround` (+`_configs`) — 4 cameras rendered/advertised, the
+  4-cam `extra_cameras` block, `SHIELD_POLICY_CAMERAS=camera_front_wide_120fov`,
+  `SHIELD_OBSTACLE_SOURCE` defaulting to `camera`.
+
+**The box session is now just step 5 (verify + re-run), on ~$14:** rsync to the box, run
+`driver=shielded_vavam_surround` on `02eadd92` with `SHIELD_DEBUG_DIR` set, pull the npz, and check
+the BEV — **does the laterally-adjacent car now appear in red (perceived)?** That single frame is
+the deliverable. First confirm the delivered-cameras log shows all four arriving (the real risk,
+step 1); then the reduced A/B (§Budget). Re-verify each camera's frame convention on the box,
+especially the rear cam. Everything below is the original plan, kept for the box-side specifics.
+
 ## Why (the motivating finding — evidence, not a hunch)
 
 The camera-perception arm works but uses **only the front camera**, so the shield's perceived

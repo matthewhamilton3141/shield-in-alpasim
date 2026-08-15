@@ -31,6 +31,7 @@ the kind of interface assumption this project checks against upstream rather tha
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -52,6 +53,43 @@ FRONT_WIDE_RIG_TO_CAMERA = {
     "rotation_xyzw": [-0.49929397355810856, 0.5039939168301356,
                       -0.4972939976976715, 0.49939397235113037],
 }
+
+# 4-camera surround calibration for the multi-camera (surround) perception arm. These are the
+# `extra_cameras` poses inlined into `shielded_vavam_surround_configs.yaml` (themselves from
+# AlpaSim's transfuser_configs.yaml), so the perception calibration matches exactly what the
+# renderer uses for that config. Every camera shares the same `opencv_pinhole` intrinsics; only
+# the rig pose differs. NOTE the front-wide pose here is transfuser's, ~1 cm off the box-verified
+# single-cam `FRONT_WIDE_*` above — each perception calib is kept consistent with the extra_cameras
+# of the config it runs under (single-cam VaVAM uses FRONT_WIDE_*, surround uses these), rather
+# than forced to one number. Re-verify each camera on the box via the BEV: side discs should land
+# to the sides, the rear camera's obstacles behind the ego (its translation x is negative).
+SURROUND_REF_HW = (1080, 1920)
+SURROUND_FOCAL = (1545.0, 1545.0)
+SURROUND_PRINCIPAL = (960.0, 560.0)
+SURROUND_RIG_TO_CAMERA = {
+    "camera_cross_left_120fov": {
+        "translation_m": [1.646354, 0.143369, 1.521469],
+        "rotation_xyzw": [0.679354, -0.207915, 0.215233, -0.670018]},
+    "camera_front_wide_120fov": {
+        "translation_m": [1.670100, -0.025875, 1.522623],
+        "rotation_xyzw": [0.509222, -0.503331, 0.495086, -0.492180]},
+    "camera_cross_right_120fov": {
+        "translation_m": [1.626168, -0.161517, 1.526269],
+        "rotation_xyzw": [0.205424, -0.674057, 0.676355, -0.214458]},
+    "camera_rear_left_70fov": {
+        "translation_m": [-0.486641, -0.000595, 1.486321],
+        "rotation_xyzw": [0.503851, 0.497823, -0.499723, -0.498582]},
+}
+
+
+def _frame_image(frame):
+    """The HWC image out of a frame, whether it's a `CameraFrame(timestamp, image)` namedtuple, a
+    plain `(timestamp, image)` tuple (what the servicer actually sends), or a bare array."""
+    if hasattr(frame, "image"):
+        return frame.image
+    if isinstance(frame, tuple):
+        return frame[1]  # (timestamp_us, image)
+    return frame
 
 
 class ObstacleSource(Protocol):
@@ -198,16 +236,7 @@ class CameraObstacleSource:
             FRONT_WIDE_RIG_TO_CAMERA, ref_hw=FRONT_WIDE_REF_HW, **kwargs,
         )
 
-    @staticmethod
-    def _frame_image(frame):
-        """The HWC image out of a frame, whether it's a `CameraFrame(timestamp, image)`
-        namedtuple, a plain `(timestamp, image)` tuple (what the servicer actually sends), or a
-        bare array."""
-        if hasattr(frame, "image"):
-            return frame.image
-        if isinstance(frame, tuple):
-            return frame[1]  # (timestamp_us, image)
-        return frame
+    _frame_image = staticmethod(_frame_image)
 
     def field_for(self, prediction_input) -> CircleField:
         frames = prediction_input.camera_images[self._camera_id]
@@ -227,6 +256,122 @@ class CameraObstacleSource:
             "%s", depth.shape, float(np.median(d)) if len(d) else -1.0,
             float(np.percentile(d, 90)) if len(d) else -1.0, len(pts_cam), len(obstacles),
             len(circles),
+            "" if not len(circles) else " | nearest x=%.1f y=%.1f" % (
+                tuple(circles[np.argmin(np.linalg.norm(circles[:, :2], axis=1)), :2])),
+        )
+        return CircleField(circles if len(circles) else None)
+
+
+@dataclass
+class CameraCalib:
+    """One camera's calibration for the multi-camera source: intrinsics at a reference resolution
+    plus the camera→rig transform `(R, t)` (see the module docstring's frame conventions).
+
+    `intrinsics` is `(fx, fy, cx, cy)` at `ref_hw`; `intrinsics_for` rescales to the frame's actual
+    resolution, exactly as the single-camera source does.
+    """
+
+    camera_id: str
+    intrinsics: tuple            # (fx, fy, cx, cy) at ref_hw
+    R: np.ndarray                # (3, 3) camera->rig rotation
+    t: np.ndarray                # (3,) camera position in the rig
+    ref_hw: tuple = SURROUND_REF_HW
+
+    def __post_init__(self):
+        self.R = np.asarray(self.R, float).reshape(3, 3)
+        self.t = np.asarray(self.t, float).reshape(3)
+
+    def intrinsics_for(self, h: int, w: int) -> tuple[float, float, float, float]:
+        fx, fy, cx, cy = self.intrinsics
+        sw, sh = w / self.ref_hw[1], h / self.ref_hw[0]
+        return fx * sw, fy * sh, cx * sw, cy * sh
+
+    @classmethod
+    def from_config(cls, camera_id: str, opencv_pinhole: dict, rig_to_camera: dict,
+                    ref_hw=SURROUND_REF_HW) -> "CameraCalib":
+        """Build from an AlpaSim `extra_cameras` entry (`intrinsics.opencv_pinhole` + `rig_to_camera`)."""
+        fx, fy = opencv_pinhole["focal_length"]
+        cx, cy = opencv_pinhole["principal_point"]
+        R = quat_xyzw_to_matrix(rig_to_camera["rotation_xyzw"])
+        t = np.asarray(rig_to_camera["translation_m"], float)
+        return cls(camera_id, (fx, fy, cx, cy), R, t, ref_hw=ref_hw)
+
+
+class MultiCameraObstacleSource:
+    """`ObstacleSource` fusing N cameras' metric depth into one rig-frame occupancy field.
+
+    The surround counterpart to `CameraObstacleSource`: same pipeline, but the back-project → rig
+    step runs *per camera* with that camera's own intrinsics/extrinsics, and all cameras' rig-frame
+    points are unioned before the single height-band + occupancy step. That gives the shield a
+    field that covers the sides and rear, not just the forward cone a single front camera sees —
+    the whole point of the surround arm (see docs/MULTICAM_HANDOFF.md).
+
+    `depth_model` is the same callable the single-cam source takes (`HWC image -> (H, W) metres`).
+    With `batched=True` it is instead called once with a *list* of the N frames and must return a
+    list of depth maps (`HFDepthModel` supports this) — one forward pass instead of N, the cost
+    lever for the 4× depth budget.
+    """
+
+    def __init__(self, depth_model, cameras: list[CameraCalib], ground_band=(0.3, 2.5),
+                 max_range_m: float = 40.0, cell_m: float = 0.5, min_pts: int = 5,
+                 stride: int = 2, batched: bool = False):
+        if not cameras:
+            raise ValueError("MultiCameraObstacleSource needs at least one camera")
+        self._depth = depth_model
+        self._cameras = list(cameras)
+        self._ground_band = ground_band
+        self._max_range_m = max_range_m
+        self._cell_m = cell_m
+        self._min_pts = min_pts
+        self._stride = stride
+        self._batched = batched
+
+    @classmethod
+    def surround(cls, depth_model, camera_ids: list[str], **kwargs) -> "MultiCameraObstacleSource":
+        """Build the standard surround rig from `SURROUND_*` for the given advertised cameras.
+
+        Each `camera_id` must be one of the known surround cameras (`SURROUND_RIG_TO_CAMERA`); they
+        all share the surround intrinsics and differ only in rig pose.
+        """
+        cams = []
+        for cid in camera_ids:
+            if cid not in SURROUND_RIG_TO_CAMERA:
+                raise KeyError(
+                    f"no surround calibration for {cid!r}; known: {sorted(SURROUND_RIG_TO_CAMERA)}")
+            cams.append(CameraCalib.from_config(
+                cid, {"focal_length": SURROUND_FOCAL, "principal_point": SURROUND_PRINCIPAL},
+                SURROUND_RIG_TO_CAMERA[cid], ref_hw=SURROUND_REF_HW))
+        return cls(depth_model, cams, **kwargs)
+
+    def _depths(self, images: list) -> list[np.ndarray]:
+        """Metric depth for each frame — one batched call when `batched`, else per-frame."""
+        if self._batched:
+            return [np.asarray(d, float) for d in self._depth(images)]
+        return [np.asarray(self._depth(im), float) for im in images]
+
+    def field_for(self, prediction_input) -> CircleField:
+        images = [_frame_image(prediction_input.camera_images[c.camera_id][-1])
+                  for c in self._cameras]
+        depths = self._depths(images)
+
+        chunks, per_cam = [], []
+        for calib, depth in zip(self._cameras, depths):
+            fx, fy, cx, cy = calib.intrinsics_for(*depth.shape[:2])
+            pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
+            chunks.append(camera_to_rig(pts_cam, calib.R, calib.t))
+            per_cam.append(len(pts_cam))
+        pts_rig = np.concatenate(chunks) if chunks else np.zeros((0, 3))
+        obstacles = pts_rig[height_band_mask(pts_rig, *self._ground_band)]
+        circles = occupancy_to_circles(
+            obstacles[:, :2], self._cell_m, self._max_range_m, self._min_pts)
+
+        # Per-camera point counts + nearest disc bearing: on the box this is how each camera's
+        # frame convention gets checked (side cams contribute lateral discs, the rear cam discs
+        # behind), the way the single-cam log verifies "are the discs ahead?".
+        logger.info(
+            "surround field: %s | %d pts -> %d in-band -> %d discs%s",
+            {c.camera_id: n for c, n in zip(self._cameras, per_cam)},
+            int(sum(per_cam)), len(obstacles), len(circles),
             "" if not len(circles) else " | nearest x=%.1f y=%.1f" % (
                 tuple(circles[np.argmin(np.linalg.norm(circles[:, :2], axis=1)), :2])),
         )
