@@ -58,7 +58,8 @@ fi
 
 echo "== 2. alpasim env (Rust toolchain for utils_rs, then uv sync) =="
 cd "$ALPASIM_DIR"
-[ -x ./setup_local_env.sh ] && ./setup_local_env.sh
+# setup_local_env.sh must be SOURCED (it installs Rust into the current shell), not executed.
+[ -f ./setup_local_env.sh ] && source ./setup_local_env.sh || true
 uv sync --extra all
 
 echo "== 3. install our plugin (--no-deps is REQUIRED: our alpasim_* deps are workspace pkgs) =="
