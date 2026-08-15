@@ -39,6 +39,15 @@ Honest caveats, stated plainly (details in `HANDOFF.md`):
   steered around. The **out-of-domain guard** now makes the shield *defer* to the policy above
   its modelled speed rather than certify with a wrong model. A certificate is only as good as
   the model it rests on — and this repo measures exactly that.
+- **Learned perception works — but it's front-camera-only, so the shield is blind to the sides.**
+  A second arm builds the obstacle field from the front camera itself (monocular metric depth →
+  BEV occupancy, `$SHIELD_OBSTACLE_SOURCE=camera`) instead of ground-truth geometry; across the
+  same 8 scenes it *barely degrades* the guarantee (at-fault `0.083 → 0.0`, progress ~flat). But a
+  single front camera perceives only a forward cone: on one scene the ego collided with a
+  *laterally-adjacent* car it never saw (verified in the BEV debug dump — the nearest close
+  obstacle was to the side/rear in ~90% of cycles and the camera perceived none of them). So a
+  camera-perception shield only guards what it can see. **Surround cameras are the next step** —
+  the plan is in [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
 
 ## The gap, and how it was closed
 
