@@ -3,12 +3,24 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> **▶ NEXT SESSION: stand up on Lambda ($7,500 credits) and run the degradation curve.** The Brev
-> box is **deleted** (its GPU died with `RmInitAdapter`, and Lambda credits landed). Bring up a
-> fresh box with **`scripts/setup_box.sh`** (one command, `HF_TOKEN=...`), then work **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**:
-> Tier 0 (validate the semantic filter on real fisheye frames — the one thing left unproven), then
-> Tier 1 (the degradation curve with n≥10). Lambda has **no stop-and-preserve** — terminate when
-> idle; put `data/` on a persistent filesystem. The multicam detail is in **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
+> ## ⚠⚠ THERE IS A LIVE LAMBDA A100 RIGHT NOW — it is BILLING (~$1.99/hr) ⚠⚠
+> A Lambda **1×A100-40GB** box is **up and fully set up** (as of 2026-08-15, this session). If you
+> are not about to use it, **TERMINATE it** (Lambda console, or it bills all day — no auto-stop).
+> `shield-data` persists, so nothing is lost by terminating.
+> - **Connect:** `ssh ubuntu@150.136.71.147` (my default key `~/.ssh/id_ed25519`; IP is ephemeral —
+>   check the Lambda console if it changed). User is `ubuntu`, already in the `docker` group.
+> - **State:** `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` (on `phase3-container-wiring`),
+>   `uv sync` done, our plugin installed, **98 tests pass**, VaVAM-S on `~/shield-data` (persistent
+>   NFS; `data/nre-artifacts` + `data/drivers` + HF cache symlinked there). A100 driver 580, CUDA 12.8.
+> - **HF token:** NOT stored here (public repo). The user must re-supply `HF_TOKEN` for scene
+>   downloads — pass it inline, never write it to the repo/FS.
+>
+> **▶ NEXT: Tier 0 (first real result on the new box).** Download `02eadd92`, run
+> `driver=shielded_vavam_surround` with `SHIELD_GATE=1 SHIELD_SEMANTIC=1` + `SHIELD_DEBUG_DIR`, and
+> **check whether SegFormer works on the NuRec fisheye frames** (or falls back to the gate). Then
+> Tier 1 (degradation curve, n≥10). Plan: **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up
+> (if you terminated and need a fresh box): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
+> Multicam detail: **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
 
 ---
 
