@@ -105,6 +105,10 @@ DEPTH_BATCH_ENV_VAR = "SHIELD_DEPTH_BATCH"
 # (scripts/make_bev_video.py). Off by default — pure debug instrumentation, no effect on driving.
 DEBUG_DIR_ENV_VAR = "SHIELD_DEBUG_DIR"
 
+# If set (comma-separated camera ids), also dump those cameras' raw frames per cycle into
+# $SHIELD_DEBUG_DIR — for a real-scene video (front/rear views) synced with the BEV. Off by default.
+DEBUG_CAMERAS_ENV_VAR = "SHIELD_DEBUG_CAMERAS"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -261,6 +265,11 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         self._inner_model = inner_model
         # Optional per-cycle BEV debug dump (perceived vs true discs); off unless the env is set.
         self._debug_dir = os.environ.get(DEBUG_DIR_ENV_VAR) or None
+        # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
+        # with the BEV). Comma-separated camera ids; empty = off.
+        self._debug_cameras = [
+            c.strip() for c in os.environ.get(DEBUG_CAMERAS_ENV_VAR, "").split(",") if c.strip()
+        ]
         self._debug_i = 0
 
     @classmethod
@@ -457,7 +466,29 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         os.makedirs(self._debug_dir, exist_ok=True)
         np.savez(os.path.join(self._debug_dir, "cyc_%04d.npz" % self._debug_i),
                  camera=cam, gt=gt, speed=float(prediction_input.speed))
+        if self._debug_cameras:
+            self._dump_camera_frames(prediction_input)
         self._debug_i += 1
+
+    def _dump_camera_frames(self, prediction_input) -> None:
+        """Save the raw frames of `$SHIELD_DEBUG_CAMERAS` this cycle (downscaled JPEGs) for a
+        real-scene video synced with the BEV. Best-effort: a missing camera or a non-image frame
+        is skipped, never fatal (this is debug instrumentation, not part of driving)."""
+        from PIL import Image
+
+        from shield_in_alpasim.obstacle_source import _frame_image
+
+        for cam in self._debug_cameras:
+            frames = prediction_input.camera_images.get(cam)
+            if not frames:
+                continue
+            arr = np.asarray(_frame_image(frames[-1]))
+            if arr.ndim != 3:
+                continue
+            pil = Image.fromarray(arr.astype("uint8"))
+            pil.thumbnail((720, 720))  # keep the dump light; full res isn't needed for a video
+            pil.save(os.path.join(self._debug_dir, "cyc_%04d_%s.jpg" % (self._debug_i, cam)),
+                     quality=85)
 
     def _rollout(self, initial_speed: float, obstacles=None, policy=None,
                  horizon_steps: int | None = None, return_stats: bool = False):
