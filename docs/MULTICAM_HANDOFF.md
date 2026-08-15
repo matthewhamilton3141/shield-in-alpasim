@@ -6,6 +6,38 @@ focused plan for one job.
 
 ---
 
+## ✔ BOX-VERIFIED + BLIND-WEDGE DIAGNOSIS (2026-08-15) — surround works; the rig has rear-quarter gaps
+
+Ran `driver=shielded_vavam_surround` on `02eadd92` (camera perception + GT debug dump). Results:
+
+- **Steps 1–2 PROVEN.** `cameras delivered: [all 4]` every cycle (policy uses front only);
+  `surround field` fuses all 4 cams (~400–520k pts each) into ~900–1500 discs; **no near-field
+  phantom ring** (`cam_discs_within_1.5m == 0` every cycle). Nearest perceived obstacle swings
+  `y=-7 … +11` across cycles — real lateral/rear coverage the front-only cone never had. BEV
+  rendered (`out_smoke_surround_result/bev_*.gif`, keyframes PNG).
+- **But surround SCORED WORSE on this one rollout: `at_fault=1.0, progress=0.638, fail`** (vs the
+  front-only camera arm's earlier 0.00 at-fault on this scene). One stochastic rollout, but the
+  cause is structural, not noise —
+- **DIAGNOSIS (free, from the BEV dumps): the 4-camera rig has ~30°-wide BLIND WEDGES at each rear
+  quarter (±115°…±145°), and 02eadd92's at-fault actor sits in one.** Coverage math: front (0°,120°)
+  → −60..60; cross-left (+55°,120°) → −5..115; cross-right (−55°,120°) → −115..5; **rear is only
+  70° (180°) → 145..215**. The 120° side cams reach just ±115°, the narrow rear cam starts at 145°,
+  so ±115..145 is uncovered. Confirmed numerically: the nearest *unperceived* GT actors every cycle
+  are at bearings −115,−122,−127,−135,−142,+130,+137,+143° — i.e. **in the wedges**. Not a
+  calibration bug, not occlusion, not our code — the transfuser rig's camera set.
+- **FIX PATH (next session, needs a re-render):** AlpaSim offers `camera_rear_wide_120fov` (one
+  120° rear cam → 120..240, closes both wedges to a ~5° sliver) and `camera_rear_right_70fov`
+  (the 6-cam presets, e.g. `wizard/configs/exp/presets/alpamayo2_comparison_6cam.yaml`, use
+  rear_left+rear_right). **Their calibration is NOT in the transfuser yaml** — only the 4 cams are
+  hardcoded there; the extra rear cams' `rig_to_camera`+intrinsics must come from the ego rig config
+  (readable from the USDZ, same source `scene.py` uses for the ego rig). Add rear_wide (or
+  rear_right) to `SURROUND_RIG_TO_CAMERA` + the surround config's cameras/extra_cameras, re-render,
+  confirm the wedge actors go red. THEN the front-only-vs-surround A/B is worth running (n≥3).
+- Box was stopped after this (diagnosis is free/off-box from here). Raw: box
+  `~/alpasim/out_smoke_surround_clipgt-02eadd92-…/`, Mac `out_smoke_surround_result/`.
+
+---
+
 ## ✔ OFF-METER CODE DONE (2026-08-14, Mac) — steps 1–4 built + unit-tested; box does step 5 only
 
 The whole surround plumbing is written and green on the Mac (73 tests, +20 for this arm). No GPU
