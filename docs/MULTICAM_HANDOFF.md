@@ -6,6 +6,34 @@ focused plan for one job.
 
 ---
 
+## ✔ PERCEPTION CLEANUP: corridor gate + semantic filter (2026-08-15) — code done; official render infra-blocked
+
+The surround field was ~97% roadside static clutter (buildings/curbs), only ~3% ever in the driving
+corridor (86,160 → 2,179 discs on 02eadd92). Built the cleanup as a **pluggable filter seam** so the
+cheap and better versions stack, not replace:
+
+- **CorridorGate** (`obstacle_source.py`, `point_filter` seam, pure numpy): keep only points in a
+  corridor around the forward path (`x<=x_max, |y|<=half_width, range<=`). `SHIELD_GATE=1` (default on
+  for surround). Previewed on the real 02eadd92 dumps — the light BEV goes from a wall of red to the
+  lead vehicle only. **Committed `375a3e6`.**
+- **SemanticDepthMask** (`obstacle_source.py` + `segmentation.py`, `depth_masker` seam, one stage
+  earlier / pixel-level): a SegFormer/Cityscapes model labels each frame, NaN every non-actor pixel,
+  so the camera field ≈ the GT *actor* field (apples-to-apples degradation experiment). `SHIELD_SEMANTIC=1`
+  (default off; adds a seg pass/cam). 98 tests. **Committed `2b5b28c`.** Both filters compose.
+- **Light theme** ([[light-themed-visuals]]): `nice_bev_video.py` + `scene_surround_video.py` default to
+  a light palette now. `SHIELD_DEBUG_CAMERAS` dumps front/rear frames for the real-scene video.
+
+**⚠ OFFICIAL RENDER BLOCKED BY INFRA (not code).** The gate+semantic render on 02eadd92 could not run:
+the box's A100 fails to initialise — `NVRM: RmInitAdapter failed! (0x62:0x40:2522)`, `nvidia-smi` "No
+devices found", `/dev/dri` gone — **persisting across a guest reboot AND a full `brev stop`/`start`
+power cycle** (GPU still visible on PCI). Known Crusoe/Brev A100 firmware-init failure. Box stopped
+(disk/setup preserved). **Next session: start the box, verify `nvidia-smi` before anything; if still
+failing, wait/retry (these often clear after the hardware fully resets) or recreate the instance
+(redoes scene/asset/driver-570 setup + needs the HF token). Then one render with `SHIELD_GATE=1
+SHIELD_SEMANTIC=1` validates the clean-actor field + metrics — the code is done and 98 tests green.**
+
+---
+
 ## ✔ REDUCED A/B + ROBUSTNESS (2026-08-15) — front-only vs ftheta-surround; two scene-variation bugs fixed
 
 Ran `scripts/surround_ab.sh` (front-only camera vs the ftheta 5-cam surround, both camera
