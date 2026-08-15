@@ -215,6 +215,45 @@ class CorridorGate:
         return keep
 
 
+def _resize_nearest(labels: np.ndarray, hw) -> np.ndarray:
+    """Nearest-neighbour resize of a `(H,W)` label map to `hw` — labels must not be interpolated."""
+    h, w = hw
+    lh, lw = labels.shape[:2]
+    if (lh, lw) == (h, w):
+        return labels
+    ys = (np.arange(h) * lh / h).astype(np.int64).clip(0, lh - 1)
+    xs = (np.arange(w) * lw / w).astype(np.int64).clip(0, lw - 1)
+    return labels[ys][:, xs]
+
+
+class SemanticDepthMask:
+    """Keep only depth pixels whose semantic label is a dynamic actor; NaN the rest.
+
+    The corridor gate ([[CorridorGate]]) drops far/off-path clutter geometrically; this is the
+    *better* filter in the same seam — it drops buildings/road/vegetation/sky by **semantics**, so
+    the camera field becomes what the GT field is: the vehicles and pedestrians. Wraps a segmenter
+    callable `image -> (H, W) label ids`; `keep_labels` defaults to the Cityscapes actor classes
+    (person, rider, car, truck, bus, train, motorcycle, bicycle). Pure numpy apart from the injected
+    segmenter, so the masking logic is unit-tested with a synthetic label map. Used as a
+    `depth_masker` on the obstacle sources (runs before back-projection).
+    """
+
+    # Cityscapes train ids for the dynamic actors (the rest are road/building/vegetation/sky/etc.).
+    CITYSCAPES_ACTORS = (11, 12, 13, 14, 15, 16, 17, 18)
+
+    def __init__(self, segmenter, keep_labels=CITYSCAPES_ACTORS):
+        self._seg = segmenter
+        self._keep = np.asarray(sorted(set(keep_labels)))
+
+    def __call__(self, image, depth) -> np.ndarray:
+        depth = np.asarray(depth, float)
+        labels = np.asarray(self._seg(image))
+        if labels.shape[:2] != depth.shape[:2]:
+            labels = _resize_nearest(labels, depth.shape[:2])
+        keep = np.isin(labels, self._keep)
+        return np.where(keep, depth, np.nan)
+
+
 class CameraObstacleSource:
     """`ObstacleSource` backed by a monocular metric-depth net over one camera.
 
@@ -227,7 +266,8 @@ class CameraObstacleSource:
 
     def __init__(self, depth_model, camera_id: str, intrinsics, rig_to_camera,
                  ref_hw=FRONT_WIDE_REF_HW, ground_band=(0.3, 2.5), max_range_m: float = 40.0,
-                 cell_m: float = 0.5, min_pts: int = 5, stride: int = 2, point_filter=None):
+                 cell_m: float = 0.5, min_pts: int = 5, stride: int = 2, point_filter=None,
+                 depth_masker=None):
         self._depth = depth_model
         self._camera_id = camera_id
         self._fx, self._fy, self._cx, self._cy = intrinsics
@@ -243,6 +283,9 @@ class CameraObstacleSource:
         # Optional relevance filter on rig-frame points (e.g. CorridorGate) — the pluggable seam
         # that drops roadside clutter; None = keep everything the height band passes.
         self._point_filter = point_filter
+        # Optional pixel-level seam `(image, depth) -> depth` run before back-projection (e.g.
+        # SemanticDepthMask, keeping only vehicle/pedestrian pixels); None = use depth as-is.
+        self._depth_masker = depth_masker
 
     def _intrinsics_for(self, h: int, w: int) -> tuple[float, float, float, float]:
         """Intrinsics rescaled from the reference resolution to the actual frame `(h, w)`.
@@ -278,7 +321,10 @@ class CameraObstacleSource:
 
     def field_for(self, prediction_input) -> CircleField:
         frames = prediction_input.camera_images[self._camera_id]
-        depth = np.asarray(self._depth(self._frame_image(frames[-1])), float)
+        image = self._frame_image(frames[-1])
+        depth = np.asarray(self._depth(image), float)
+        if self._depth_masker is not None:
+            depth = np.asarray(self._depth_masker(image, depth), float)
         fx, fy, cx, cy = self._intrinsics_for(*depth.shape[:2])
         pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
         pts_rig = camera_to_rig(pts_cam, self._R, self._t)
@@ -464,7 +510,7 @@ class MultiCameraObstacleSource:
 
     def __init__(self, depth_model, cameras, ground_band=(0.3, 2.5),
                  max_range_m: float = 40.0, cell_m: float = 0.5, min_pts: int = 5,
-                 stride: int = 2, batched: bool = False, point_filter=None):
+                 stride: int = 2, batched: bool = False, point_filter=None, depth_masker=None):
         # `cameras` is any list of camera models exposing `.camera_id` and
         # `.points_rig(depth, max_range_m, stride)` — pinhole `CameraCalib` or fisheye
         # `FthetaCamera`. The fusion loop is identical; only the per-camera un-projection differs.
@@ -481,6 +527,9 @@ class MultiCameraObstacleSource:
         # Optional relevance filter on the fused rig-frame points (e.g. CorridorGate) — the same
         # pluggable seam the single-cam source has; None = keep everything the height band passes.
         self._point_filter = point_filter
+        # Optional per-camera pixel-level seam `(image, depth) -> depth` before back-projection
+        # (e.g. SemanticDepthMask); applied to each camera's frame. None = depth as-is.
+        self._depth_masker = depth_masker
 
     @classmethod
     def surround(cls, depth_model, camera_ids: list[str], **kwargs) -> "MultiCameraObstacleSource":
@@ -511,7 +560,9 @@ class MultiCameraObstacleSource:
         depths = self._depths(images)
 
         chunks, per_cam = [], []
-        for cam, depth in zip(self._cameras, depths):
+        for cam, image, depth in zip(self._cameras, images, depths):
+            if self._depth_masker is not None:
+                depth = np.asarray(self._depth_masker(image, depth), float)
             rig_pts = cam.points_rig(depth, self._max_range_m, self._stride)
             chunks.append(rig_pts)
             per_cam.append(len(rig_pts))

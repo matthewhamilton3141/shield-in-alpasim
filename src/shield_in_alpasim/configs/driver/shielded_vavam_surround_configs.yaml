@@ -91,6 +91,11 @@ services:
       - "SHIELD_GATE_XMAX=${oc.env:SHIELD_GATE_XMAX,25.0}"
       - "SHIELD_GATE_HALFWIDTH=${oc.env:SHIELD_GATE_HALFWIDTH,4.0}"
       - "SHIELD_GATE_RANGE=${oc.env:SHIELD_GATE_RANGE,20.0}"
+      # Semantic filter: keep only vehicle/pedestrian pixels (the *better* clutter filter, makes the
+      # camera field comparable to the GT actor field). Off by default (adds a seg pass per camera);
+      # host SHIELD_SEMANTIC=1 enables it, SHIELD_SEG_MODEL overrides the model.
+      - "SHIELD_SEMANTIC=${oc.env:SHIELD_SEMANTIC,0}"
+      - "SHIELD_SEG_MODEL=${oc.env:SHIELD_SEG_MODEL,nvidia/segformer-b0-finetuned-cityscapes-1024-1024}"
       - "SHIELD_DEBUG_DIR=${oc.env:SHIELD_DEBUG_DIR,}"
       # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
       # with the BEV). Empty = off (driver.py `_dump_camera_frames`).

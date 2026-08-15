@@ -19,6 +19,8 @@ from shield_in_alpasim.obstacle_source import (
     CorridorGate,
     FthetaCamera,
     MultiCameraObstacleSource,
+    SemanticDepthMask,
+    _resize_nearest,
     backproject_depth,
     camera_to_rig,
     height_band_mask,
@@ -370,3 +372,52 @@ def test_gate_reduces_disc_count_vs_no_gate():
     n_un = len(ungated.field_for(_multi_prediction_input({"front": depth})).circles)
     n_g = len(gated.field_for(_multi_prediction_input({"front": depth})).circles)
     assert 0 < n_g < n_un
+
+
+# --- the semantic filter (better clutter filter, same seam) ---
+
+
+def test_resize_nearest_upsamples_labels_without_interpolating():
+    lab = np.array([[1, 2], [3, 4]])
+    out = _resize_nearest(lab, (4, 4))
+    assert out.shape == (4, 4)
+    assert set(np.unique(out)) == {1, 2, 3, 4}          # no invented in-between labels
+    assert out[0, 0] == 1 and out[-1, -1] == 4
+
+
+def test_semantic_mask_keeps_only_actor_pixels():
+    # Label map: left half = building (2, dropped), right half = car (13, kept).
+    labels = np.full((10, 10), 2)
+    labels[:, 5:] = 13
+    depth = np.full((10, 10), 8.0)
+    mask = SemanticDepthMask(segmenter=lambda _img: labels)  # default keep = Cityscapes actors
+    out = mask(image=None, depth=depth)
+    assert np.all(np.isnan(out[:, :5]))                  # building depth removed
+    assert np.all(out[:, 5:] == 8.0)                     # car depth kept
+
+
+def test_semantic_mask_resizes_a_coarser_label_map():
+    # Segmenter returns a coarser map than the depth (as real seg models do) -> resized, then keep.
+    labels = np.array([[2, 13]])           # 1x2 coarse: left building, right car
+    depth = np.full((4, 8), 5.0)           # finer depth
+    out = SemanticDepthMask(lambda _i: labels)(None, depth)
+    assert np.all(np.isnan(out[:, :4])) and np.all(out[:, 4:] == 5.0)
+
+
+def test_depth_masker_seam_drops_non_actor_points_end_to_end():
+    # A central obstacle patch, but the segmenter labels it all "road" (0) -> nothing kept.
+    front = _calib("front", _M_CAM_TO_RIG)
+    depth = _central_patch_depth()
+    road_only = SemanticDepthMask(lambda _i: np.zeros_like(depth, dtype=int))  # all road -> dropped
+    src = MultiCameraObstacleSource(
+        lambda img: img, [front], ground_band=(-100.0, 100.0),
+        max_range_m=40.0, cell_m=1.0, min_pts=3, depth_masker=road_only)
+    field = src.field_for(_multi_prediction_input({"front": depth}))
+    assert field.circles is None or len(field.circles) == 0   # no actor pixels -> empty field
+
+    # Now label the patch as car (13) -> the blob survives.
+    car = SemanticDepthMask(lambda _i: np.where(depth > 0, 13, 0))
+    src2 = MultiCameraObstacleSource(
+        lambda img: img, [front], ground_band=(-100.0, 100.0),
+        max_range_m=40.0, cell_m=1.0, min_pts=3, depth_masker=car)
+    assert len(src2.field_for(_multi_prediction_input({"front": depth})).circles) > 0

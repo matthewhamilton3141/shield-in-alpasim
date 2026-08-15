@@ -114,6 +114,11 @@ DEBUG_CAMERAS_ENV_VAR = "SHIELD_DEBUG_CAMERAS"
 # corridor. SHIELD_GATE=1 enables it; optional SHIELD_GATE_XMAX / _HALFWIDTH / _RANGE tune it.
 GATE_ENV_VAR = "SHIELD_GATE"
 
+# Semantic filter (obstacle_source.SemanticDepthMask): keep only vehicle/pedestrian PIXELS before
+# back-projection, so the camera field matches the GT actor field (the *better* clutter filter).
+# SHIELD_SEMANTIC=1 enables it; SHIELD_SEG_MODEL overrides the segmentation model.
+SEMANTIC_ENV_VAR = "SHIELD_SEMANTIC"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -358,7 +363,9 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
         model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
         depth_model = HFDepthModel(model_name, device=str(device))
-        gate = cls._corridor_gate_from_env()  # None unless SHIELD_GATE is on
+        gate = cls._corridor_gate_from_env()          # None unless SHIELD_GATE is on
+        masker = cls._semantic_masker_from_env(device)  # None unless SHIELD_SEMANTIC is on
+        src_kw = dict(point_filter=gate, depth_masker=masker)
         # Several advertised cameras -> the surround rig fuses them all into one field; a single
         # camera -> the original front-only source. Perception uses every advertised camera,
         # regardless of which subset the inner policy consumes.
@@ -380,19 +387,20 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
                         "No usable per-scene surround calibration (%s); falling back to FRONT-ONLY "
                         "camera perception for this scene (no surround coverage here).", exc)
                     return CameraObstacleSource.front_wide(
-                        depth_model, camera_id="camera_front_wide_120fov", point_filter=gate)
+                        depth_model, camera_id="camera_front_wide_120fov", **src_kw)
                 logger.info(
                     "Obstacle field from SURROUND ftheta perception (%d cams from USDZ calib, "
-                    "depth %s, batched=%s, gate=%s)", len(cams), model_name, batched, bool(gate))
-                return MultiCameraObstacleSource(depth_model, cams, batched=batched, point_filter=gate)
+                    "depth %s, batched=%s, gate=%s, semantic=%s)",
+                    len(cams), model_name, batched, bool(gate), bool(masker))
+                return MultiCameraObstacleSource(depth_model, cams, batched=batched, **src_kw)
             logger.warning(
                 "%s not set/found (%r): surround perception falling back to FRONT-ONLY camera "
                 "perception (no scene USDZ -> no real calibration).", SCENE_ENV_VAR, usdz)
             return CameraObstacleSource.front_wide(
-                depth_model, camera_id="camera_front_wide_120fov", point_filter=gate)
-        logger.info("Obstacle field from CAMERA perception (depth model %s, gate=%s)",
-                    model_name, bool(gate))
-        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0], point_filter=gate)
+                depth_model, camera_id="camera_front_wide_120fov", **src_kw)
+        logger.info("Obstacle field from CAMERA perception (depth %s, gate=%s, semantic=%s)",
+                    model_name, bool(gate), bool(masker))
+        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0], **src_kw)
 
     @staticmethod
     def _corridor_gate_from_env():
@@ -417,6 +425,20 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         logger.info("Corridor gate ON: x<=%.1f, |y|<=%.1f, range<=%.1f",
                     gate.x_max, gate.half_width, gate.max_range_m)
         return gate
+
+    @staticmethod
+    def _semantic_masker_from_env(device):
+        """A `SemanticDepthMask` when `$SHIELD_SEMANTIC` is on, else None. Loads the segmentation
+        model (box-only, deferred import), keeping only vehicle/pedestrian pixels."""
+        if os.environ.get(SEMANTIC_ENV_VAR, "0") != "1":
+            return None
+        from shield_in_alpasim.obstacle_source import SemanticDepthMask
+        from shield_in_alpasim.segmentation import DEFAULT_MODEL as SEG_DEFAULT
+        from shield_in_alpasim.segmentation import HFSegmenter
+
+        seg_name = os.environ.get("SHIELD_SEG_MODEL", SEG_DEFAULT)
+        logger.info("Semantic filter ON: keeping actor pixels via %s", seg_name)
+        return SemanticDepthMask(HFSegmenter(seg_name, device=str(device)))
 
     @staticmethod
     def _build_inner_model(model_cfg, device, camera_ids, context_length, output_frequency_hz):
