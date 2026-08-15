@@ -6,6 +6,37 @@ focused plan for one job.
 
 ---
 
+## ✔ REDUCED A/B + ROBUSTNESS (2026-08-15) — front-only vs ftheta-surround; two scene-variation bugs fixed
+
+Ran `scripts/surround_ab.sh` (front-only camera vs the ftheta 5-cam surround, both camera
+perception, GT-armed, n=1) on `02eadd92`, `01d503d4`, `026d6a39`. It did its job twice over — gave
+a directional read AND surfaced two robustness bugs that only appear across scene variation:
+
+1. **Polynomial direction.** Not every scene stores the fisheye poly as `angle→pixeldist`;
+   `01d503d4`'s cross_left ships `pixeldist→angle`, and `load_ftheta_cameras` raised ValueError →
+   surround crashed. Fixed: `FthetaCamera.poly_kind` handles both (invert vs evaluate directly).
+2. **Missing calibration.** Some USDZs have **no `calibration_estimate.parquet` at all**
+   (`026d6a39` → the renderer uses a synthesized rig, so frames still arrive). `parse_cameras_from_usdz`
+   raised FileNotFoundError → crash. Fixed: the driver catches it and **degrades to the verified
+   front-only pinhole arm** for that scene (surround simply isn't available there), rather than crash.
+
+Both fixes committed (`d788f57`, `bd06541`) + box-verified (01d503d4 surround now passes; 026d6a39
+fallback fires and produces a result). A/B rows (n=1, so directional only): `02eadd92` front pass
+0.90 / surround pass 1.00; `01d503d4` both pass 1.00; `026d6a39` front pass 0.95 / surround→front
+fallback (this scene can't do surround), and one rollout even flipped to fail — **pure VaVAM n=1
+noise**, the reason a real rate needs n≥3.
+
+**Honest state of the A/B:** it proved the surround arm now runs *robustly* across scene variations
+and re-confirmed the `02eadd92` win, but it is NOT yet a rate — n=1 is too noisy and only 02eadd92
+(of these three) both has calibration and a lateral threat. A real number wants n≥3 on several
+calibration-bearing scenes with lateral/rear actors.
+
+**Deliverable:** `scripts/nice_bev_video.py` renders a presentation-quality shield's-eye BEV (dark
+radar, ego, camera FOV sectors, true-green vs perceived-red, HUD). `out_ftsurround_result/surround_02eadd92.mp4`
+is the portfolio video of the 360° result.
+
+---
+
 ## ★★★ FIX VERIFIED (2026-08-15) — real ftheta 360° rig turns the 02eadd92 fail into a PASS
 
 Implemented + box-verified the correct surround geometry. The blind wedges were an artifact of
