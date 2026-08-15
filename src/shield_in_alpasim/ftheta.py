@@ -97,20 +97,25 @@ def project_ftheta(pts_flu, cx, cy, poly, linear_cde=(1.0, 0.0, 0.0)):
     return np.stack([u, v], axis=1)
 
 
-def unproject_pixels(u, v, depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0, 0.0),
-                     rendered_hw=None, max_range_m: float = 40.0,
-                     max_angle: float | None = None) -> np.ndarray:
-    """Flat pixel arrays `(u, v, depth)` → `(N,3)` points in the **sensor FLU** frame.
+# Widest ray we'll un-project. Past ~80° z-depth × tanθ explodes and these lenses (≤120° FOV,
+# i.e. ≤60° half-angle) don't image that far off-axis anyway; drop anything beyond as spurious.
+MAX_THETA = np.deg2rad(80.0)
 
-    `cx, cy, poly` are the ftheta intrinsics at `native_hw`; `u, v` are at `rendered_hw` (defaults to
-    native), so pixel distances are rescaled to native before inverting the polynomial. Depth is
-    z-depth along the optical axis, so a point is `depth · [1, -tanθ cosφ, -tanθ sinφ]`. Pixels
-    outside the lens's valid cone (NaN θ) or out of range are dropped.
+# The two polynomial directions AlpaSim stores (per camera, per scene — both occur in the wild):
+POLY_ANGLE_TO_PIXELDIST = "angle_to_pixeldist"   # r(θ); invert to get θ (theta_of_r)
+POLY_PIXELDIST_TO_ANGLE = "pixeldist_to_angle"   # θ(r); evaluate directly, no inversion
+
+
+def angle_from_pixeldist(u, v, cx, cy, poly, poly_kind, native_hw, linear_cde=(1.0, 0.0, 0.0),
+                         rendered_hw=None, max_angle: float | None = None):
+    """Pixels `(u, v)` → `(θ, φ)`: ray angle off the optical axis and image-plane azimuth.
+
+    Handles both polynomial directions AlpaSim ships: `angle→pixeldist` (invert `r(θ)`) and
+    `pixeldist→angle` (evaluate `θ(r)` directly). `θ` is NaN for pixels outside the usable cone.
     """
     u = np.asarray(u, float)
     v = np.asarray(v, float)
-    d = np.asarray(depth, float)
-    nH, nW = native_hw
+    nW = native_hw[1]
     s = 1.0 if rendered_hw is None else rendered_hw[1] / nW  # rendered→native scale
 
     du = u - cx * s
@@ -118,9 +123,28 @@ def unproject_pixels(u, v, depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0,
     du, dv = _linear_undistort(du, dv, linear_cde)
     r_native = np.hypot(du, dv) / s
 
-    theta = theta_of_r(poly, r_native, max_angle=max_angle)
-    phi = np.arctan2(dv, du)
+    if poly_kind == POLY_PIXELDIST_TO_ANGLE:
+        theta = poly_r_of_theta(poly, r_native)  # poly maps pixel distance -> angle directly
+    else:
+        theta = theta_of_r(poly, r_native, max_angle=max_angle)
+    theta = np.where((theta >= 0) & (theta < MAX_THETA), theta, np.nan)
+    return theta, np.arctan2(dv, du)
 
+
+def unproject_pixels(u, v, depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0, 0.0),
+                     rendered_hw=None, max_range_m: float = 40.0,
+                     poly_kind: str = POLY_ANGLE_TO_PIXELDIST,
+                     max_angle: float | None = None) -> np.ndarray:
+    """Flat pixel arrays `(u, v, depth)` → `(N,3)` points in the **sensor FLU** frame.
+
+    `cx, cy, poly` are the ftheta intrinsics at `native_hw`; `u, v` are at `rendered_hw` (defaults to
+    native). Depth is z-depth along the optical axis, so a point is `depth · [1, -tanθ cosφ,
+    -tanθ sinφ]`. Pixels outside the lens's usable cone (NaN θ) or out of range are dropped.
+    """
+    d = np.asarray(depth, float)
+    theta, phi = angle_from_pixeldist(u, v, cx, cy, poly, poly_kind, native_hw,
+                                      linear_cde=linear_cde, rendered_hw=rendered_hw,
+                                      max_angle=max_angle)
     valid = np.isfinite(theta) & np.isfinite(d) & (d > 0.0) & (d <= max_range_m)
     theta, phi, d = theta[valid], phi[valid], d[valid]
     t = np.tan(theta)
@@ -129,6 +153,7 @@ def unproject_pixels(u, v, depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0,
 
 def backproject_ftheta(depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0, 0.0),
                        max_range_m: float = 40.0, stride: int = 1,
+                       poly_kind: str = POLY_ANGLE_TO_PIXELDIST,
                        max_angle: float | None = None) -> np.ndarray:
     """`(H,W)` metric depth → `(N,3)` points in the **sensor FLU** frame (x fwd, y left, z up).
 
@@ -141,5 +166,5 @@ def backproject_ftheta(depth, cx, cy, poly, native_hw, linear_cde=(1.0, 0.0, 0.0
     return unproject_pixels(
         us.ravel(), vs.ravel(), depth[::stride, ::stride].ravel(),
         cx, cy, poly, native_hw, linear_cde=linear_cde, rendered_hw=(h, w),
-        max_range_m=max_range_m, max_angle=max_angle,
+        max_range_m=max_range_m, poly_kind=poly_kind, max_angle=max_angle,
     )

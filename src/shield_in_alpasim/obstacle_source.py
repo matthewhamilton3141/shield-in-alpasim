@@ -318,11 +318,12 @@ class FthetaCamera:
     camera_id: str
     cx: float
     cy: float
-    poly: tuple            # angle->pixeldist polynomial (c0 first) at native_hw
+    poly: tuple            # ftheta polynomial (c0 first) at native_hw
     native_hw: tuple       # (H, W) the intrinsics are calibrated at
     R: np.ndarray          # (3,3) camera(FLU)->rig rotation
     t: np.ndarray          # (3,) camera position in the rig
     linear_cde: tuple = (1.0, 0.0, 0.0)
+    poly_kind: str = "angle_to_pixeldist"  # or "pixeldist_to_angle" (both occur across scenes)
 
     def __post_init__(self):
         self.R = np.asarray(self.R, float).reshape(3, 3)
@@ -335,24 +336,26 @@ class FthetaCamera:
 
         pts_flu = backproject_ftheta(depth, self.cx, self.cy, self.poly, self.native_hw,
                                      linear_cde=self.linear_cde, max_range_m=max_range_m,
-                                     stride=stride)
+                                     stride=stride, poly_kind=self.poly_kind)
         if len(pts_flu) == 0:
             return pts_flu.reshape(-1, 3)
         return pts_flu @ self.R.T + self.t
 
     @classmethod
     def from_params(cls, camera_id, translation_m, rotation_xyzw, cx, cy, poly, native_hw,
-                    linear_cde=(1.0, 0.0, 0.0)) -> "FthetaCamera":
+                    linear_cde=(1.0, 0.0, 0.0),
+                    poly_kind="angle_to_pixeldist") -> "FthetaCamera":
         """Build from raw calibration numbers (pure — the box-only USDZ read is done by the caller).
 
         `rotation_xyzw` is the sensor-FLU→rig quaternion from `nominalSensor2Rig_FLU`; the optical
         axis is +x in that frame (verified: this makes the front camera look forward and the rear
-        cameras look to the rear quarters, docs/MULTICAM_HANDOFF.md).
+        cameras look to the rear quarters, docs/MULTICAM_HANDOFF.md). `poly_kind` selects the
+        polynomial direction (`angle_to_pixeldist` or `pixeldist_to_angle`); both occur per scene.
         """
         R = quat_xyzw_to_matrix(rotation_xyzw)
         t = np.asarray(translation_m, float)
         return cls(camera_id, float(cx), float(cy), tuple(poly), tuple(native_hw), R, t,
-                   linear_cde=tuple(linear_cde))
+                   linear_cde=tuple(linear_cde), poly_kind=poly_kind)
 
 
 def _pose_vec(v):
@@ -379,15 +382,24 @@ def load_ftheta_cameras(usdz_path: str, camera_ids) -> list[FthetaCamera]:
         cd = defs[cid]
         pose = cd.rig_to_camera
         ft = cd.intrinsics.ftheta_param
-        poly = list(ft.angle_to_pixeldist_poly)
-        if not poly:
-            raise ValueError(f"{cid}: no angle->pixeldist polynomial (reference_poly not ANGLE_TO_PIXELDIST)")
+        # Cameras store the fisheye polynomial in EITHER direction depending on the scene
+        # (both occur in the sample set). Prefer angle->pixeldist (invert on use); otherwise take
+        # pixeldist->angle (evaluated directly). The earlier code assumed the former and crashed on
+        # scenes that ship the latter (e.g. 01d503d4's cross_left).
+        a2p = list(ft.angle_to_pixeldist_poly)
+        p2a = list(ft.pixeldist_to_angle_poly)
+        if a2p:
+            poly, kind = a2p, "angle_to_pixeldist"
+        elif p2a:
+            poly, kind = p2a, "pixeldist_to_angle"
+        else:
+            raise ValueError(f"{cid}: camera has neither ftheta polynomial direction populated")
         lc = ft.linear_cde
         cams.append(FthetaCamera.from_params(
             cid, _pose_vec(pose.vec3), _pose_vec(pose.quat),
             float(ft.principal_point_x), float(ft.principal_point_y), poly,
             (int(cd.intrinsics.resolution_h), int(cd.intrinsics.resolution_w)),
-            linear_cde=(lc.linear_c, lc.linear_d, lc.linear_e),
+            linear_cde=(lc.linear_c, lc.linear_d, lc.linear_e), poly_kind=kind,
         ))
     logger.info("Loaded ftheta calibration for %d cameras from %s: %s",
                 len(cams), usdz_path, [c.camera_id for c in cams])

@@ -52,7 +52,7 @@ def test_front_wide_image_edge_is_about_60_degrees():
 def test_project_unproject_roundtrip_recovers_points():
     # A spread of FLU points across the field (x forward, y left, z up), all in front of the lens.
     rng = np.random.default_rng(0)
-    max_ang = max_valid_angle(FRONT_POLY) * 0.9
+    max_ang = np.deg2rad(55.0)  # within a 120deg lens (half-FOV 60), below the 80deg un-project cap
     pts = []
     for _ in range(200):
         theta = rng.uniform(0, max_ang)
@@ -94,6 +94,27 @@ def test_rendered_resolution_rescales():
     p = unproject_pixels([FRONT_CX * s], [FRONT_CY * s], [10.0], FRONT_CX, FRONT_CY,
                          FRONT_POLY, FRONT_NATIVE_HW, rendered_hw=(1080, 1920))
     assert np.allclose(p[0], [10.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_pixeldist_to_angle_matches_the_inverse_direction():
+    # For an equidistant model r = f*theta, the two polynomial directions are exact inverses:
+    # angle->pixeldist = [0, f]  and  pixeldist->angle = [0, 1/f]. Un-projecting with either must
+    # give the same points. This covers scenes that ship the pixeldist->angle form (e.g. 01d503d4),
+    # which the first ftheta implementation crashed on.
+    f = 1800.0
+    native = (2160, 3840)
+    cx, cy = 1920.0, 1080.0
+    rng = np.random.default_rng(1)
+    u = rng.uniform(cx - 1500, cx + 1500, 100)
+    v = rng.uniform(cy - 800, cy + 800, 100)
+    d = rng.uniform(3.0, 30.0, 100)
+
+    a2p = unproject_pixels(u, v, d, cx, cy, [0.0, f], native, max_range_m=1e9,
+                           poly_kind="angle_to_pixeldist")
+    p2a = unproject_pixels(u, v, d, cx, cy, [0.0, 1.0 / f], native, max_range_m=1e9,
+                           poly_kind="pixeldist_to_angle")
+    assert a2p.shape == p2a.shape
+    assert np.allclose(a2p, p2a, atol=1e-6)
 
 
 def test_backproject_depth_map_smoke():
