@@ -25,13 +25,17 @@ RIG_FOV = [
     ("rear_left", 153.0, 35.0), ("rear_right", -151.0, 35.0),
 ]
 
-BG = "#0a0e14"
-GRID = "#1b2430"
-FOVC = "#22d3ee"
-GT_C = "#34d399"
-CAM_C = "#fb5b5b"
-FG = "#e5e7eb"
-ACCENT = "#22d3ee"
+# Light theme (Matthew prefers light-themed visuals).
+BG = "#ffffff"        # background
+GRID = "#c7d0da"      # range rings / gridlines
+FOVC = "#2563eb"      # camera FOV sectors (faint blue)
+GT_C = "#15803d"      # true obstacle (ground truth) — green
+CAM_C = "#dc2626"     # perceived (camera depth) — red
+FG = "#111827"        # primary text
+MUTED = "#6b7280"     # secondary text
+ACCENT = "#2563eb"    # accent (subtitle / heading)
+EGO_FC = "#cbd5e1"    # ego body fill
+EGO_EC = "#334155"    # ego body edge
 
 
 def _discs(z, key):
@@ -71,21 +75,21 @@ def main(argv=None):
 
     # Static backdrop: range rings + camera FOV sectors (plot angle = 90 + rig bearing).
     for rng in (5, 10, 15, 20):
-        ax.add_artist(plt.Circle((0, 0), rng, fill=False, ec=GRID, lw=0.8, zorder=1))
-        ax.text(0.4, rng - 0.2, f"{rng} m", color=GRID, fontsize=7, zorder=1)
+        ax.add_artist(plt.Circle((0, 0), rng, fill=False, ec=GRID, lw=0.9, zorder=1))
+        ax.text(0.4, rng - 0.2, f"{rng} m", color=MUTED, fontsize=7, zorder=1)
     for _name, bearing, hf in RIG_FOV:
         pc = 90.0 + bearing
         ax.add_patch(Wedge((0, 0), XLIM * 1.6, pc - hf, pc + hf, facecolor=FOVC,
-                           alpha=0.05, ec="none", zorder=0))
+                           alpha=0.07, ec="none", zorder=0))
     # Ego (a rounded body pointing up / +forward).
     ax.add_patch(FancyBboxPatch((-0.9, -1.1), 1.8, 3.2, boxstyle="round,pad=0.02,rounding_size=0.4",
-                                fc="#334155", ec=FG, lw=1.2, zorder=5))
+                                fc=EGO_FC, ec=EGO_EC, lw=1.2, zorder=5))
     ax.plot([0, 0], [0, 1.6], color=ACCENT, lw=1.4, zorder=6)  # heading
 
     fig.text(0.5, 0.955, args.title, color=FG, fontsize=14, ha="center", weight="bold")
     fig.text(0.5, 0.925, args.subtitle, color=ACCENT, fontsize=9.5, ha="center")
     if args.caption:
-        fig.text(0.5, 0.035, args.caption, color="#9fb3c8", fontsize=8.5, ha="center",
+        fig.text(0.5, 0.035, args.caption, color=MUTED, fontsize=8.5, ha="center",
                  style="italic", wrap=True)
     hud = fig.text(0.5, 0.08, "", color=FG, fontsize=10, ha="center", family="monospace")
 
