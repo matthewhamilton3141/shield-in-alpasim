@@ -1,0 +1,125 @@
+# Next session — surround-camera perception for the shield
+
+Self-contained handoff to give the shield a multi-camera (surround) obstacle field instead of a
+single front camera. Pick this up cold. The living session log is `../HANDOFF.md`; this is the
+focused plan for one job.
+
+## Why (the motivating finding — evidence, not a hunch)
+
+The camera-perception arm works but uses **only the front camera**, so the shield's perceived
+obstacle field is a **forward cone**. It is blind to anything beside or behind the ego.
+
+Proof, from the BEV debug dump of scene `02eadd92` (39 cycles, `_dump_debug` → `make_bev_video.py`):
+across ~90% of cycles the *nearest* ground-truth obstacle within 6 m was to the **RIGHT / LEFT /
+BEHIND**, and the camera perceived it in essentially **none** of them — it only ever saw obstacles
+that were **AHEAD**. By cycles 27–31 a car was basically on top of the ego (contact) and the front
+camera showed nothing. **The visible collision was with a laterally-adjacent car the front camera
+cannot see.** So today's "0 at-fault" is partly hollow: the shield only guards the forward cone.
+
+**Goal:** render side (and rear) cameras, fuse their metric depth into one rig-frame BEV occupancy
+field, so the shield can brake for lateral/rear threats too. Then re-run the sweep and show the
+side car now appearing in red (perceived) and the contact avoided.
+
+## What already exists and works (don't rebuild)
+
+- **Camera arm end to end** (`SHIELD_OBSTACLE_SOURCE=camera`): `depth.py` (`HFDepthModel`, Depth
+  Anything V2 Metric Outdoor → metres), `obstacle_source.py` (`CameraObstacleSource`, single front
+  cam), driver wiring in `driver.py:_build_obstacle_source`, BEV debug viz (`scripts/make_bev_video.py`
+  + `$SHIELD_DEBUG_DIR`).
+- **Frame convention VERIFIED on the box** (this is the thing that's easy to get wrong):
+  AlpaSim's `rig_to_camera` stores the **camera's pose in the rig** → `p_rig = R @ p_cam + t`
+  (`R = quat_xyzw_to_matrix(rotation_xyzw)`, `t = translation_m`). OpenCV camera axes: x right, y
+  down, z forward. Output rig frame: x forward, y left, z up. This applies **per camera** — but
+  re-verify each new camera on the box via the BEV (side obstacles should land to the sides, rear
+  behind).
+- **Servicer sends `(timestamp, image)` tuples**, not `CameraFrame` objects (`_frame_image` handles it).
+- `transformers`/`torch` are already in the `alpasim-base` image; the metric-depth checkpoint is a
+  public HF download into the mounted cache.
+- Single-cam calibration is hardcoded (`FRONT_WIDE_*` in `obstacle_source.py`) and rescaled to the
+  actual frame resolution (`_intrinsics_for`).
+
+## The work, in order
+
+**1. Deliver multi-camera frames to the driver — solve this first, it's the tricky one.**
+AlpaSim only delivers `camera_images` for the cameras the driver *advertises* (`camera_ids` /
+`inference.use_cameras`). But the inner policy (VaVAM) calls `_validate_cameras` and expects
+**exactly its one** camera. So:
+   - Advertise ALL perception cameras (config `inference.use_cameras = [front, cross_left,
+     cross_right, rear]`) so AlpaSim renders + delivers them, and set `ShieldedDriver.camera_ids`
+     to all of them.
+   - Pass the inner policy **only its subset** of `camera_images` before `inner.predict()` (filter
+     the dict to VaVAM's front cam), so VaVAM's validation passes. Add a "policy cameras" notion
+     (env `SHIELD_POLICY_CAMERAS`, or derive from the inner model) distinct from "perception cameras".
+   - `_build_inner_model` must hand the inner model only its own `camera_ids`, not all — otherwise
+     VaVAM's `from_config`/validation chokes on the extras.
+   - **Write a smoke test first:** a run that just logs which cameras arrive in `camera_images`,
+     before touching perception, to confirm the extras are actually delivered.
+
+**2. Config: a surround config** `configs/driver/shielded_vavam_surround.yaml` (+ `_configs`):
+list all N cameras in `runtime.simulation_config.cameras` and their calibration in
+`runtime.extra_cameras` (copy the 4-camera block below). Keep the existing shield env passthroughs.
+
+**3. Generalize `CameraObstacleSource` → multi-camera.** Take a list of cameras, each
+`(camera_id, intrinsics, extrinsics, ref_hw)`. In `field_for`: per camera, grab its frame → depth →
+`backproject_depth` with *its* intrinsics → `camera_to_rig` with *its* `(R, t)` → collect points;
+concatenate all cameras' rig-frame points; height-band once; `occupancy_to_circles` once on the
+union. Add hardcoded calib constants for the 4 cameras (values below). The pure-numpy helpers are
+unchanged — only the loop over cameras is new, and it stays unit-testable with synthetic depth.
+
+**4. Depth cost:** N cameras = N forward passes/cycle → slower. Either batch the N frames through
+`HFDepthModel` in one call (make it accept a list) or use the Small model and accept it. The
+current run was already ~2 s/cycle with one camera.
+
+**5. Verify + re-run.** Diagnostic run with `$SHIELD_DEBUG_DIR` → pull npz → `make_bev_video.py`;
+confirm side/rear obstacles now appear in red at the right bearings. Then re-run
+`shield_ab.sh SHIELD_OBSTACLE_SOURCE AB_VALUES="gt camera"` (or a 3-way front-only vs surround vs gt)
+with `N_ROLLOUTS>=3`. Payoff: the lateral collision that front-only missed should now be
+perceived (and, where preventable, avoided). Re-render `02eadd92` BEV to show it.
+
+## The 4-camera calibration (from AlpaSim's transfuser config — paste into the surround config / constants)
+
+`opencv_pinhole` for all four: `focal_length [1545, 1545]`, `principal_point [960, 560]`,
+`resolution_hw [1080, 1920]`. `rig_to_camera` per camera (`translation_m`, `rotation_xyzw`):
+
+| logical_id | translation_m | rotation_xyzw |
+|---|---|---|
+| camera_cross_left_120fov | [1.646354, 0.143369, 1.521469] | [0.679354, -0.207915, 0.215233, -0.670018] |
+| camera_front_wide_120fov | [1.670100, -0.025875, 1.522623] | [0.509222, -0.503331, 0.495086, -0.492180] |
+| camera_cross_right_120fov | [1.626168, -0.161517, 1.526269] | [0.205424, -0.674057, 0.676355, -0.214458] |
+| camera_rear_left_70fov | [-0.486641, -0.000595, 1.486321] | [0.503851, 0.497823, -0.499723, -0.498582] |
+
+(Note the front-wide values here differ slightly from the single-cam `FRONT_WIDE_*` constants
+currently in `obstacle_source.py` — reconcile to one source. The rear cam is a 70° FOV; its
+translation x is negative, i.e. behind the rig — good for confirming the transform on the box.)
+Full block with distortion coeffs is in
+`plugins/transfuser_driver/alpasim_transfuser/configs/driver/transfuser_configs.yaml` in
+NVlabs/alpasim (re-clone to `/tmp/alpasim-src` if gone).
+
+## Files to touch
+
+- `src/shield_in_alpasim/obstacle_source.py` — multi-camera loop + per-camera calib constants.
+- `src/shield_in_alpasim/driver.py` — advertise-all vs policy-subset cameras; multi-cam
+  `_build_obstacle_source`; hand inner model only its cameras.
+- `src/shield_in_alpasim/depth.py` — optional batched forward pass.
+- `src/shield_in_alpasim/configs/driver/shielded_vavam_surround.yaml` (+ `_configs`).
+- `scripts/make_bev_video.py` — already handles more discs; no change needed.
+
+## Gotchas / honest caveats
+
+- **Camera-delivery/validation puzzle (step 1) is the real risk** — smoke-test it before building
+  perception on top.
+- **Not every "collision" is preventable or the shield's fault.** Traffic is non-reactive replay
+  (`trafficsim: disabled`); a logged actor that sideswipes the ego without yielding is not an
+  at-fault, braking-preventable event. Distinguish "shield was blind" (fixable by surround cams)
+  from "unavoidable given non-reactive traffic". The BEV viz is how you tell them apart.
+- **Re-verify the frame convention per camera** on the box; the rear cam especially.
+- **VaVAM is stochastic** — n≥10 for real numbers; single rollouts are noisy.
+- Depth is N× slower with N cameras.
+
+## Box ops
+
+See `../HANDOFF.md` "Resume recipe" and the `brev-box-operational-notes` memory. Short version:
+`brev start shield-a100 && brev refresh`; `ssh -F ~/.brev/ssh_config shield-a100`; run long jobs in
+tmux; `docker container prune -f && docker network prune -f` between batches (networks leak);
+`brev stop` when done (guest `shutdown` does NOT stop billing). Scenes for the 8-scene sweep and the
+box-side helper scripts (`scene_sweep.sh`, `shield_ab.sh`, `make_bev_video.py`) are already there.

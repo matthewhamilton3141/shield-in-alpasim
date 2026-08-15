@@ -3,6 +3,11 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
+> **▶ NEXT SESSION: surround-camera perception.** The camera arm uses only the *front* camera, so
+> the shield is blind to the sides/rear — a visible collision on `02eadd92` was with a
+> laterally-adjacent car the front cam can't see (evidence in the dumps). The focused plan to add
+> side + rear cameras is in **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)** — start there.
+
 ---
 
 ## ★★★★ FINAL HEADLINE SWEEP — all fixes on (2026-08-14)
