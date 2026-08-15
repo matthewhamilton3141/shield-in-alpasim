@@ -259,6 +259,37 @@ def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     assert driver.context_length == 1  # None in config -> the model's own default
 
 
+def test_build_obstacle_source_camera_path_resolves_sibling_helpers(monkeypatch):
+    """Regression: `_build_obstacle_source` must reach its `_corridor_gate_from_env` /
+    `_semantic_masker_from_env` siblings. As a @staticmethod it called them via `cls`, which is
+    unbound there -> NameError, crashing the driver at startup on the camera-perception path. The
+    gt default returns early, so the torch-free suite never exercised this branch; only a box render
+    did (and it died before a single cycle). Here we stub the torch-backed depth model + source ctor
+    so the pure-Python wiring runs on the Mac and the classmethod fix stays covered."""
+    import shield_in_alpasim.depth as depth_mod
+    import shield_in_alpasim.obstacle_source as osrc
+    from shield_in_alpasim.obstacle_source import CorridorGate
+
+    sentinel = object()
+    monkeypatch.setattr(depth_mod, "HFDepthModel", lambda *a, **k: sentinel)
+    captured = {}
+
+    def _fake_front_wide(depth_model, camera_id, **kw):
+        captured.update(camera_id=camera_id, **kw)
+        return sentinel
+
+    monkeypatch.setattr(osrc.CameraObstacleSource, "front_wide", _fake_front_wide)
+    monkeypatch.setenv("SHIELD_OBSTACLE_SOURCE", "camera")
+    monkeypatch.setenv("SHIELD_GATE", "1")          # exercises _corridor_gate_from_env via cls
+    monkeypatch.delenv("SHIELD_SEMANTIC", raising=False)  # semantic off -> no torch/segformer
+
+    src = ShieldedDriver._build_obstacle_source("cpu", CAMERAS)
+
+    assert src is sentinel
+    assert isinstance(captured["point_filter"], CorridorGate)  # the gate was built and threaded in
+    assert captured["depth_masker"] is None                    # semantic off
+
+
 # --- the decorator path: shielding an inner policy ---
 #
 # `predict()` itself stays untested here (it builds AlpaSim's ModelPrediction, uninstallable

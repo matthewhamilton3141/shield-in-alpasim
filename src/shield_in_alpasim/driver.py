@@ -337,8 +337,8 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
                     cams, list(camera_ids))
         return cams
 
-    @staticmethod
-    def _build_obstacle_source(device, camera_ids):
+    @classmethod
+    def _build_obstacle_source(cls, device, camera_ids):
         """The learned-perception obstacle source when `$SHIELD_OBSTACLE_SOURCE=camera`, else None.
 
         None keeps the ground-truth arm (the shield reads the scene's actors). `camera` swaps in

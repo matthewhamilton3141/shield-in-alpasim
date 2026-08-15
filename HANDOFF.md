@@ -15,12 +15,49 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 > - **HF token:** NOT stored here (public repo). The user must re-supply `HF_TOKEN` for scene
 >   downloads — pass it inline, never write it to the repo/FS.
 >
-> **▶ NEXT: Tier 0 (first real result on the new box).** Download `02eadd92`, run
-> `driver=shielded_vavam_surround` with `SHIELD_GATE=1 SHIELD_SEMANTIC=1` + `SHIELD_DEBUG_DIR`, and
-> **check whether SegFormer works on the NuRec fisheye frames** (or falls back to the gate). Then
-> Tier 1 (degradation curve, n≥10). Plan: **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up
-> (if you terminated and need a fresh box): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
-> Multicam detail: **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
+> **▶ NEXT: Tier 1 (the degradation curve).** Tier 0 is DONE (see the section directly below):
+> the surround+semantic pipeline runs end-to-end and **SegFormer works on the NuRec fisheye**. Now
+> sweep the perception ladder (GT → +localization noise → front-cam → surround-gate →
+> surround-semantic) across ~30 scenes at n≥10 for the paper figure. Plan:
+> **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up (if you terminated and need a fresh
+> box): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam detail:
+> **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
+>
+> **Box note:** `shield-data` had VaVAM weights but NO scenes (the handoff's "scenes on shield-data"
+> was stale) — scene `02eadd92` was re-downloaded to `~/alpasim/data/nre-artifacts` (local disk, not
+> the persistent NFS). For Tier 1, symlink `nre-artifacts` onto `shield-data` so the sweep's scenes
+> survive termination.
+
+---
+
+## ★★★ TIER 0 DONE — surround+semantic runs, and SegFormer WORKS on NuRec fisheye (2026-08-15)
+
+First real result on the Lambda A100. Downloaded scene `02eadd92` (gated NuRec, 1.7 G) and ran
+`driver=shielded_vavam_surround` armed, `SHIELD_SEMANTIC=1 SHIELD_DEPTH_BATCH=1`, with
+`SHIELD_DEBUG_DIR` + `SHIELD_DEBUG_CAMERAS` dumping per-cycle BEV npz and raw fisheye JPEGs.
+
+- **A real bug, found + fixed.** `ShieldedDriver._build_obstacle_source` was a `@staticmethod` but
+  called `cls._corridor_gate_from_env()` / `cls._semantic_masker_from_env()` → `NameError: cls`,
+  crashing the driver at startup on the **camera** path. This was the never-run path (the `gt`
+  default returns early, so the 98-test suite never hit it; the Brev GPU died before any camera
+  render). Fixed to a `@classmethod`; **added a regression test** that stubs the torch-backed depth
+  model + source ctor and drives the camera branch on the Mac → **99 tests pass**.
+- **End-to-end success (n=1).** Driver logs: `Semantic filter ON`, `Loaded ftheta calibration for 5
+  cameras`, `Obstacle field from SURROUND ftheta perception (5 cams ... gate=True, semantic=True)`,
+  live `n_obstacles` 22→7→0 as the road cleared, and **`collision_at_fault=0.0`** (the guarantee
+  held). The rollout went `offroad` (progress 0.66) but the shield was **passive** there
+  (`n_interventions: 0`, VaVAM's `accel=2.0` passed through) — so **VaVAM** drove off-route, not the
+  shield. Pure VaVAM variance; this is exactly what Tier 1's n≥10 averages out.
+- **The Tier 0 verdict: SegFormer works on the fisheye — no gate-only fallback needed.** Offline
+  probe (`scripts/seg_probe.py`) on the dumped frames: histograms dominated by road/building/
+  vegetation/sky (correct), with actor masks on the real vehicles — cross-left **bus 16.7%**,
+  rear-left **car 9.1% + truck 3.5% + person 0.5%**. One harmless quirk: the VTA bus sometimes reads
+  as "train", still a kept-actor class (id 16), so still retained as an obstacle. Visual overlays +
+  a surround **segmentation video** (`scripts/seg_video.py`, actor pixels magenta across the drive)
+  confirm the masks track the cars. Artifacts pulled to `out_tier0_result/` (gitignored).
+- **Ops:** first render of a fresh image races on the base-image build (4 services tag
+  `alpasim-base:0.134.0` in parallel → `image ... already exists`); just **re-run** once the image
+  is cached. Lambda sshd is flaky under render load — run everything in `tmux`, poll from the Mac.
 
 ---
 
