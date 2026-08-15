@@ -6,6 +6,40 @@ focused plan for one job.
 
 ---
 
+## ★★★ FIX VERIFIED (2026-08-15) — real ftheta 360° rig turns the 02eadd92 fail into a PASS
+
+Implemented + box-verified the correct surround geometry. The blind wedges were an artifact of
+**hardcoded pinhole poses that didn't match the renderer**; AlpaSim renders every camera from the
+scene's real per-clip **ftheta** calibration (`_register_scene_cameras` → `parse_cameras_from_usdz`),
+and the real rear cameras point to the rear *quarters* (+153°, −151°), not straight back. So the
+real 5-camera rig (front + 2 cross + 2 rear) is **full 360°, no wedge**.
+
+What landed (all committed, `5d70e1b`; 89 tests): `ftheta.py` (fisheye un-projection, angle↔pixeldist
+polynomial, round-trip-verified to ~1 cm off-box); `FthetaCamera` + `load_ftheta_cameras` (reads the
+real per-scene calibration from the USDZ); driver loads it when the scene is armed; the surround
+config renders the real 5-cam rig by logical_id (calibration from the USDZ, no hardcoded
+`extra_cameras`). `docs/real_rig_calib_02eadd92.json` is the extracted calibration.
+
+**02eadd92, single rollout, GT-armed:**
+
+| arm | at_fault | progress | status |
+|---|---|---|---|
+| pinhole surround (wrong rig) | 1.0 | 0.638 | fail |
+| **ftheta surround (real 360°)** | **0.0** | **0.853** | **PASS** |
+
+Mechanism confirmed, not luck: the nearest GT actors that the wedge diagnosis found **unperceived**
+at ±115–161° are now **perceived** (camera disc within 0.2–0.9 m of each; BEV shows red over the
+rear-right green). All 5 cameras delivered + fused (~380–500k pts each), ftheta calib loaded from
+the USDZ, no errors. Caveat: **n=1 and VaVAM is stochastic** — the flip is well-explained by the
+geometry fix but wants n≥3 to be a firm number. Artifacts: box `~/alpasim/out_ftsurround_*/`, Mac
+`out_ftsurround_result/` (BEV gif + keyframes). Box stopped after.
+
+**Next:** the reduced A/B is now worth running — front-only vs ftheta-surround across a few scenes,
+n≥3, to turn this single-scene flip into a rate. (The far-left distant actor on 02eadd92 is still
+sometimes unperceived — occlusion or beyond useful mono-depth range, not a wedge; separate issue.)
+
+---
+
 ## ✔ BOX-VERIFIED + BLIND-WEDGE DIAGNOSIS (2026-08-15) — surround works; the rig has rear-quarter gaps
 
 Ran `driver=shielded_vavam_surround` on `02eadd92` (camera perception + GT debug dump). Results:
