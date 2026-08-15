@@ -23,6 +23,10 @@ KITTINAV_DIR=${KITTINAV_DIR:-$HOME/kitti-nav}
 ALPASIM_REPO=${ALPASIM_REPO:-https://github.com/NVlabs/alpasim.git}
 KITTINAV_REPO=${KITTINAV_REPO:-https://github.com/matthewhamilton3141/kitti-nav.git}
 VAVAM_MODEL=${VAVAM_MODEL:-VaVAM-S}
+# Lambda persistent filesystem mount (survives instance termination). Set DATA_FS to it (e.g.
+# $HOME/shield-data) to keep the gated scenes + VaVAM weights + HF model cache across re-provisions
+# — they get symlinked in below. Empty = everything on the ephemeral instance disk (re-downloaded).
+DATA_FS=${DATA_FS:-}
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 echo "== 0. prerequisites =="
@@ -39,6 +43,18 @@ DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 | cu
 echo "== 1. clone repos (this repo is $SHIELD_DIR) =="
 [ -d "$ALPASIM_DIR/.git" ]  || git clone "$ALPASIM_REPO"  "$ALPASIM_DIR"
 [ -d "$KITTINAV_DIR/.git" ] || git clone "$KITTINAV_REPO" "$KITTINAV_DIR"
+
+if [ -n "$DATA_FS" ]; then
+  echo "== 1b. persist heavy dirs on the filesystem $DATA_FS (survives termination) =="
+  mkdir -p "$DATA_FS/nre-artifacts" "$DATA_FS/drivers" "$DATA_FS/hf_cache" "$ALPASIM_DIR/data"
+  ln -sfn "$DATA_FS/nre-artifacts" "$ALPASIM_DIR/data/nre-artifacts"  # gated scenes (~1.7 GB each)
+  ln -sfn "$DATA_FS/drivers"       "$ALPASIM_DIR/data/drivers"        # VaVAM weights
+  # HF cache (depth/seg models + gated scene downloads). Move an existing real dir onto the FS
+  # rather than clobber it or nest a symlink inside it.
+  HF="$HOME/.cache/huggingface"; mkdir -p "$HOME/.cache"
+  if [ -e "$HF" ] && [ ! -L "$HF" ]; then cp -an "$HF/." "$DATA_FS/hf_cache/" 2>/dev/null || true; rm -rf "$HF"; fi
+  ln -sfn "$DATA_FS/hf_cache" "$HF"
+fi
 
 echo "== 2. alpasim env (Rust toolchain for utils_rs, then uv sync) =="
 cd "$ALPASIM_DIR"
