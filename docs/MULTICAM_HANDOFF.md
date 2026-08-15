@@ -31,9 +31,12 @@ and re-confirmed the `02eadd92` win, but it is NOT yet a rate — n=1 is too noi
 (of these three) both has calibration and a lateral threat. A real number wants n≥3 on several
 calibration-bearing scenes with lateral/rear actors.
 
-**Deliverable:** `scripts/nice_bev_video.py` renders a presentation-quality shield's-eye BEV (dark
-radar, ego, camera FOV sectors, true-green vs perceived-red, HUD). `out_ftsurround_result/surround_02eadd92.mp4`
-is the portfolio video of the 360° result.
+**Deliverables (videos):** `scripts/nice_bev_video.py` renders a presentation-quality shield's-eye
+BEV (dark radar, ego, camera FOV sectors, true-green vs perceived-red, HUD). `scripts/scene_surround_video.py`
+composes the **real rendered scene** — front + both rear camera views — beside that radar, synced per
+cycle; it needs the driver's `SHIELD_DEBUG_CAMERAS` env (dumps named cameras' frames alongside the
+BEV npz; the surround config passes it through). Portfolio MP4s in `out_ftsurround_result/` and
+`out_vidsurround_result/`.
 
 ---
 
