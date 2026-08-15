@@ -7,12 +7,16 @@ confirmed on the box (see the module docstring) — these tests pin the maths, n
 interface.
 """
 
+import json
+import pathlib
+
 import numpy as np
 
 from shield_in_alpasim.obstacle_source import (
     SURROUND_RIG_TO_CAMERA,
     CameraCalib,
     CameraObstacleSource,
+    FthetaCamera,
     MultiCameraObstacleSource,
     backproject_depth,
     camera_to_rig,
@@ -20,6 +24,19 @@ from shield_in_alpasim.obstacle_source import (
     occupancy_to_circles,
     quat_xyzw_to_matrix,
 )
+
+# Real per-scene ftheta calibration dumped from the 02eadd92 USDZ (parse_cameras_from_usdz).
+_REAL_CALIB = json.loads(
+    (pathlib.Path(__file__).resolve().parent.parent / "docs/real_rig_calib_02eadd92.json").read_text()
+)
+
+
+def _real_ftheta(cid: str) -> FthetaCamera:
+    c = _REAL_CALIB[cid]
+    return FthetaCamera.from_params(
+        cid, c["translation_m"], c["rotation_xyzw"], c["cx"], c["cy"],
+        c["angle_to_pixeldist_poly"], c["resolution_hw"], linear_cde=c["linear_cde"],
+    )
 
 # OpenCV camera (x right, y down, z forward) -> rig (x forward, y left, z up): p_rig = M p_cam.
 # camera_to_rig applies (R, t) as camera->rig (p_rig = R p_cam + t), so pass R = M directly.
@@ -243,3 +260,56 @@ def test_surround_pipeline_lands_a_patch_on_the_right_side_per_real_camera():
             assert abs(c[1]) < 4.0, (cid, "y~0", c)
         else:
             assert np.sign(c[1]) == sy, (cid, "y", c)
+
+
+# --- the REAL ftheta rig (from the scene's own calibration) ---
+
+
+def test_ftheta_camera_places_a_forward_patch_ahead_at_camera_height():
+    # Real front-wide ftheta calib + pose: a central depth patch at 10 m lands ~ahead of the ego
+    # at camera height, using the true fisheye model (not the pinhole approximation).
+    cam = _real_ftheta("camera_front_wide_120fov")
+    depth = np.zeros((108, 192))       # rendered res; native is 2160x3840, rescaled internally
+    # Centre the patch on the rescaled principal point (s = 192/3840 = 0.05), so the rays are
+    # near the optical axis -> straight ahead at camera height (front-wide cy is below image mid).
+    s = 192 / 3840
+    r0, c0 = int(round(cam.cy * s)), int(round(cam.cx * s))
+    depth[r0 - 4:r0 + 4, c0 - 4:c0 + 4] = 10.0
+    pts = cam.points_rig(depth, max_range_m=40.0, stride=1)
+    assert len(pts) > 0
+    assert np.all(pts[:, 0] > 0)                      # ahead of the rig origin
+    assert abs(np.median(pts[:, 1])) < 3.0            # near the longitudinal axis
+    assert 0.8 < np.median(pts[:, 2]) < 2.0           # ~camera height (~1.3 m)
+
+
+def test_multicamera_fuses_real_ftheta_front_and_rear():
+    # Front + rear-right real ftheta cameras: a patch in each -> a disc ahead AND one behind,
+    # exercising the generalized MultiCameraObstacleSource over ftheta models end to end.
+    front, rear = _real_ftheta("camera_front_wide_120fov"), _real_ftheta("camera_rear_right_70fov")
+    src = MultiCameraObstacleSource(
+        lambda img: img, [front, rear], ground_band=(-100.0, 100.0),
+        max_range_m=40.0, cell_m=1.0, min_pts=3)
+    field = src.field_for(_multi_prediction_input({
+        front.camera_id: _central_patch_depth(), rear.camera_id: _central_patch_depth()}))
+    xs = field.circles[:, 0]
+    assert xs.max() > 5.0     # a disc ahead (front cam)
+    assert xs.min() < -5.0    # and one behind (rear-right cam)
+
+
+def test_real_rig_covers_360_degrees_no_blind_wedge():
+    # THE fix's off-box proof: the real 5-camera rig (front + 2 cross + 2 rear, angled to the
+    # quarters) covers the full circle, unlike the hardcoded pinhole rig whose rear cams pointed
+    # straight back and left ~30deg blind wedges at each rear quarter (docs/MULTICAM_HANDOFF.md).
+    half_fov = {"120fov": 60.0, "70fov": 35.0}
+    sectors = []
+    for cid in ("camera_front_wide_120fov", "camera_cross_left_120fov",
+                "camera_cross_right_120fov", "camera_rear_left_70fov", "camera_rear_right_70fov"):
+        cam = _real_ftheta(cid)
+        axis = cam.R @ np.array([1.0, 0.0, 0.0])       # FLU optical axis is +x
+        b = np.degrees(np.arctan2(axis[1], axis[0]))
+        hf = half_fov[cid.rsplit("_", 1)[1]]
+        sectors.append((b, hf))
+    # Every bearing on the circle must be inside at least one camera's [axis-hf, axis+hf] sector.
+    for deg in range(-180, 180):
+        covered = any(abs((deg - b + 180) % 360 - 180) <= hf for b, hf in sectors)
+        assert covered, f"blind spot at bearing {deg} deg"

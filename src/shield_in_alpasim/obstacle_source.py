@@ -286,6 +286,13 @@ class CameraCalib:
         sw, sh = w / self.ref_hw[1], h / self.ref_hw[0]
         return fx * sw, fy * sh, cx * sw, cy * sh
 
+    def points_rig(self, depth, max_range_m: float, stride: int) -> np.ndarray:
+        """`(H,W)` depth → `(N,3)` rig-frame points, via the pinhole model + this camera's pose."""
+        depth = np.asarray(depth, float)
+        fx, fy, cx, cy = self.intrinsics_for(*depth.shape[:2])
+        pts_cam = backproject_depth(depth, fx, fy, cx, cy, max_range_m, stride)
+        return camera_to_rig(pts_cam, self.R, self.t)
+
     @classmethod
     def from_config(cls, camera_id: str, opencv_pinhole: dict, rig_to_camera: dict,
                     ref_hw=SURROUND_REF_HW) -> "CameraCalib":
@@ -295,6 +302,96 @@ class CameraCalib:
         R = quat_xyzw_to_matrix(rig_to_camera["rotation_xyzw"])
         t = np.asarray(rig_to_camera["translation_m"], float)
         return cls(camera_id, (fx, fy, cx, cy), R, t, ref_hw=ref_hw)
+
+
+@dataclass
+class FthetaCamera:
+    """One fisheye (ftheta) camera: real per-scene calibration → rig-frame points.
+
+    The correct model for AlpaSim's actual cameras (see `ftheta.py`): intrinsics are the
+    angle→pixeldist polynomial at `native_hw`, and `R, t` is the camera→rig pose in the **sensor
+    FLU** frame (x forward/optical, y left, z up) — `p_rig = R @ p_flu + t`. Built from the USDZ
+    calibration (`from_params`, fed by `parse_cameras_from_usdz` on the box), so unlike the pinhole
+    `CameraCalib` there is nothing hardcoded and the geometry matches what the renderer produced.
+    """
+
+    camera_id: str
+    cx: float
+    cy: float
+    poly: tuple            # angle->pixeldist polynomial (c0 first) at native_hw
+    native_hw: tuple       # (H, W) the intrinsics are calibrated at
+    R: np.ndarray          # (3,3) camera(FLU)->rig rotation
+    t: np.ndarray          # (3,) camera position in the rig
+    linear_cde: tuple = (1.0, 0.0, 0.0)
+
+    def __post_init__(self):
+        self.R = np.asarray(self.R, float).reshape(3, 3)
+        self.t = np.asarray(self.t, float).reshape(3)
+        self.poly = tuple(float(c) for c in self.poly)
+
+    def points_rig(self, depth, max_range_m: float, stride: int) -> np.ndarray:
+        """`(H,W)` depth → `(N,3)` rig-frame points, via the ftheta model + this camera's pose."""
+        from shield_in_alpasim.ftheta import backproject_ftheta
+
+        pts_flu = backproject_ftheta(depth, self.cx, self.cy, self.poly, self.native_hw,
+                                     linear_cde=self.linear_cde, max_range_m=max_range_m,
+                                     stride=stride)
+        if len(pts_flu) == 0:
+            return pts_flu.reshape(-1, 3)
+        return pts_flu @ self.R.T + self.t
+
+    @classmethod
+    def from_params(cls, camera_id, translation_m, rotation_xyzw, cx, cy, poly, native_hw,
+                    linear_cde=(1.0, 0.0, 0.0)) -> "FthetaCamera":
+        """Build from raw calibration numbers (pure — the box-only USDZ read is done by the caller).
+
+        `rotation_xyzw` is the sensor-FLU→rig quaternion from `nominalSensor2Rig_FLU`; the optical
+        axis is +x in that frame (verified: this makes the front camera look forward and the rear
+        cameras look to the rear quarters, docs/MULTICAM_HANDOFF.md).
+        """
+        R = quat_xyzw_to_matrix(rotation_xyzw)
+        t = np.asarray(translation_m, float)
+        return cls(camera_id, float(cx), float(cy), tuple(poly), tuple(native_hw), R, t,
+                   linear_cde=tuple(linear_cde))
+
+
+def _pose_vec(v):
+    """A `Pose.vec3`/`.quat` as a plain list, whether it's an attribute array or a method."""
+    v = v() if callable(v) else v
+    return [float(x) for x in list(v)]
+
+
+def load_ftheta_cameras(usdz_path: str, camera_ids) -> list[FthetaCamera]:
+    """Real per-scene ftheta cameras from a scene `.usdz` (box-only; needs `alpasim_runtime`).
+
+    Uses AlpaSim's own `parse_cameras_from_usdz` — the same calibration `_register_scene_cameras`
+    feeds the renderer — so perception geometry matches what was rendered, and the rear cameras
+    carry their true rear-quarter angles (no blind wedge, unlike the old hardcoded pinhole rig).
+    The `alpasim_runtime` import is deferred so this module still imports on a Mac.
+    """
+    from alpasim_runtime.video_model.usdz_calibration import parse_cameras_from_usdz
+
+    defs = parse_cameras_from_usdz(usdz_path)
+    cams = []
+    for cid in camera_ids:
+        if cid not in defs:
+            raise KeyError(f"camera {cid!r} not in the scene calibration ({sorted(defs)})")
+        cd = defs[cid]
+        pose = cd.rig_to_camera
+        ft = cd.intrinsics.ftheta_param
+        poly = list(ft.angle_to_pixeldist_poly)
+        if not poly:
+            raise ValueError(f"{cid}: no angle->pixeldist polynomial (reference_poly not ANGLE_TO_PIXELDIST)")
+        lc = ft.linear_cde
+        cams.append(FthetaCamera.from_params(
+            cid, _pose_vec(pose.vec3), _pose_vec(pose.quat),
+            float(ft.principal_point_x), float(ft.principal_point_y), poly,
+            (int(cd.intrinsics.resolution_h), int(cd.intrinsics.resolution_w)),
+            linear_cde=(lc.linear_c, lc.linear_d, lc.linear_e),
+        ))
+    logger.info("Loaded ftheta calibration for %d cameras from %s: %s",
+                len(cams), usdz_path, [c.camera_id for c in cams])
+    return cams
 
 
 class MultiCameraObstacleSource:
@@ -312,9 +409,12 @@ class MultiCameraObstacleSource:
     lever for the 4× depth budget.
     """
 
-    def __init__(self, depth_model, cameras: list[CameraCalib], ground_band=(0.3, 2.5),
+    def __init__(self, depth_model, cameras, ground_band=(0.3, 2.5),
                  max_range_m: float = 40.0, cell_m: float = 0.5, min_pts: int = 5,
                  stride: int = 2, batched: bool = False):
+        # `cameras` is any list of camera models exposing `.camera_id` and
+        # `.points_rig(depth, max_range_m, stride)` — pinhole `CameraCalib` or fisheye
+        # `FthetaCamera`. The fusion loop is identical; only the per-camera un-projection differs.
         if not cameras:
             raise ValueError("MultiCameraObstacleSource needs at least one camera")
         self._depth = depth_model
@@ -355,11 +455,10 @@ class MultiCameraObstacleSource:
         depths = self._depths(images)
 
         chunks, per_cam = [], []
-        for calib, depth in zip(self._cameras, depths):
-            fx, fy, cx, cy = calib.intrinsics_for(*depth.shape[:2])
-            pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
-            chunks.append(camera_to_rig(pts_cam, calib.R, calib.t))
-            per_cam.append(len(pts_cam))
+        for cam, depth in zip(self._cameras, depths):
+            rig_pts = cam.points_rig(depth, self._max_range_m, self._stride)
+            chunks.append(rig_pts)
+            per_cam.append(len(rig_pts))
         pts_rig = np.concatenate(chunks) if chunks else np.zeros((0, 3))
         obstacles = pts_rig[height_band_mask(pts_rig, *self._ground_band)]
         circles = occupancy_to_circles(

@@ -225,16 +225,14 @@ def test_policy_input_narrows_a_frozen_prediction_input():
     assert narrowed.speed == 3.0
 
 
-def test_surround_config_and_perception_constants_agree():
-    # The config renders/advertises/calibrates a set of cameras; the perception source hardcodes
-    # their calibration (from_config never receives extra_cameras). They MUST name the same
-    # cameras and carry the same poses, or the shield would perceive with a calibration that
-    # doesn't match what the renderer produced — a silent, box-only geometry bug. Cross-check here.
+def test_surround_config_renders_and_advertises_the_same_cameras():
+    # The surround config renders a set of cameras and advertises the same set to the driver.
+    # Calibration is NOT in the config anymore — the renderer and our perception both read it from
+    # the scene USDZ (parse_cameras_from_usdz), like AlpaSim's own 6-cam preset — so we only check
+    # the rendered/advertised sets agree and are the real 5-camera 360 rig.
     import pathlib
 
     import yaml
-
-    from shield_in_alpasim.obstacle_source import SURROUND_RIG_TO_CAMERA
 
     cfg_dir = pathlib.Path(__file__).resolve().parent.parent / \
         "src/shield_in_alpasim/configs/driver"
@@ -242,19 +240,14 @@ def test_surround_config_and_perception_constants_agree():
     drv = yaml.safe_load((cfg_dir / "shielded_vavam_surround.yaml").read_text())
 
     rendered = {c["logical_id"] for c in glob["runtime"]["simulation_config"]["cameras"]}
-    extra = {c["logical_id"]: c for c in glob["runtime"]["extra_cameras"]}
     advertised = set(drv["inference"]["use_cameras"])
+    expected = {"camera_front_wide_120fov", "camera_cross_left_120fov",
+                "camera_cross_right_120fov", "camera_rear_left_70fov", "camera_rear_right_70fov"}
 
-    # Every camera is rendered, advertised, calibrated in the config, and known to perception.
-    assert rendered == advertised == set(extra) == set(SURROUND_RIG_TO_CAMERA)
-    # VaVAM's front camera is actually advertised (or the policy would ask for a missing frame).
-    assert "camera_front_wide_120fov" in advertised
-
-    # The config's extra_cameras poses match the perception constants exactly (one source).
-    for cid, want in SURROUND_RIG_TO_CAMERA.items():
-        got = extra[cid]["rig_to_camera"]
-        assert got["translation_m"] == want["translation_m"], cid
-        assert got["rotation_xyzw"] == want["rotation_xyzw"], cid
+    assert rendered == advertised == expected
+    # No hardcoded extra_cameras — calibration comes from the USDZ (the whole point of the fix).
+    assert "extra_cameras" not in glob["runtime"]
+    assert "camera_front_wide_120fov" in advertised  # VaVAM's policy camera is advertised
 
 
 def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():

@@ -338,7 +338,9 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         from shield_in_alpasim.obstacle_source import (
             CameraObstacleSource,
             MultiCameraObstacleSource,
+            load_ftheta_cameras,
         )
+        from shield_in_alpasim.scene import SCENE_ENV_VAR
 
         model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
         depth_model = HFDepthModel(model_name, device=str(device))
@@ -347,9 +349,20 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # regardless of which subset the inner policy consumes.
         if len(camera_ids) > 1:
             batched = os.environ.get(DEPTH_BATCH_ENV_VAR, "0") == "1"
-            logger.info(
-                "Obstacle field from SURROUND camera perception (%d cams %s, depth %s, batched=%s)",
-                len(camera_ids), list(camera_ids), model_name, batched)
+            # Load the REAL per-scene ftheta calibration from the same USDZ AlpaSim renders from,
+            # so perception matches the rendered geometry and the rear cameras carry their true
+            # rear-quarter angles (full 360, no blind wedge). Needs the scene USDZ armed.
+            usdz = os.environ.get(SCENE_ENV_VAR)
+            if usdz and os.path.exists(usdz):
+                cams = load_ftheta_cameras(usdz, list(camera_ids))
+                logger.info(
+                    "Obstacle field from SURROUND ftheta perception (%d cams from USDZ calib, "
+                    "depth %s, batched=%s)", len(cams), model_name, batched)
+                return MultiCameraObstacleSource(depth_model, cams, batched=batched)
+            logger.warning(
+                "%s not set/found (%r): surround perception falling back to the HARDCODED pinhole "
+                "rig — geometry is approximate and has rear-quarter blind wedges. Arm the scene "
+                "USDZ for the real ftheta calibration.", SCENE_ENV_VAR, usdz)
             return MultiCameraObstacleSource.surround(
                 depth_model, list(camera_ids), batched=batched)
         logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)

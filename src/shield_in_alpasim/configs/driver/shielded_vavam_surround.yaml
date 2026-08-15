@@ -1,9 +1,10 @@
-# driver=shielded_vavam_surround — the shield wrapping VaVAM, perceiving from the 4-camera
+# driver=shielded_vavam_surround — the shield wrapping VaVAM, perceiving from the real 5-camera
 # surround rig instead of the front camera alone.
 #
-# Identical to shielded_vavam.yaml except `inference.use_cameras` advertises ALL FOUR cameras, so
-# AlpaSim renders + delivers the sides and rear. The shield's camera obstacle source fuses all
-# four into one rig-frame occupancy field (covering lateral/rear threats the front-only arm was
+# Identical to shielded_vavam.yaml except `inference.use_cameras` advertises ALL FIVE surround
+# cameras, so AlpaSim renders + delivers the sides and rear. The shield's camera obstacle source
+# loads each camera's real per-scene ftheta calibration from the USDZ and fuses all five into one
+# rig-frame occupancy field (full 360deg coverage — lateral/rear threats the front-only arm was
 # blind to, docs/MULTICAM_HANDOFF.md); VaVAM, the inner policy, is still handed only its one front
 # camera (SHIELD_POLICY_CAMERAS in shielded_vavam_surround_configs.yaml).
 #
@@ -30,14 +31,16 @@ host: "0.0.0.0"
 port: ???
 
 inference:
-  # Advertise all four so AlpaSim renders + delivers them for the shield's surround perception.
+  # Advertise all five so AlpaSim renders + delivers them for the shield's surround perception.
   # VaVAM only consumes the front one (SHIELD_POLICY_CAMERAS); the driver filters the rest out
-  # before calling it so its `_validate_cameras` passes (driver.py `_policy_input`).
+  # before calling it so its `_validate_cameras` passes (driver.py `_policy_input`). The real rig's
+  # rear cameras point to the rear quarters, so front + 2 cross + 2 rear = full 360deg coverage.
   use_cameras:
     - camera_cross_left_120fov
     - camera_front_wide_120fov
     - camera_cross_right_120fov
     - camera_rear_left_70fov
+    - camera_rear_right_70fov
   max_batch_size: 32
   subsample_factor: 1
   context_length: 1
