@@ -116,6 +116,27 @@ NVlabs/alpasim (re-clone to `/tmp/alpasim-src` if gone).
 - **VaVAM is stochastic** — n≥10 for real numbers; single rollouts are noisy.
 - Depth is N× slower with N cameras.
 
+## Budget (~$14 in Brev as of 2026-08-14)
+
+`shield-a100` is `a100-80gb.1x` at **~$1.98/hr**, billed only while *running* (stopped = cheap
+storage). ~$14 ≈ **~7 GPU-hours** — and multicam is the pricey arm: 4 cameras = **4× the depth
+forward passes per cycle**, so renders run materially slower than the single-cam ones.
+
+**Plan the session to fit $14 — prove it works, defer the big sweep:**
+1. Camera-delivery smoke test (which cameras arrive) — minutes, ~$1.
+2. Get surround perception building; verify on **1–2 scenes** with `$SHIELD_DEBUG_DIR` → BEV — does
+   the laterally-adjacent car on `02eadd92` now show up in **red** (perceived)? ~$2–3. That single
+   BEV, side car now visible, is the deliverable that proves the fix.
+3. A **reduced** A/B — 3–4 scenes, `N_ROLLOUTS=1`, video off — front-only vs surround, to see if
+   the lateral collisions drop. ~$4–6.
+   → still leaves a buffer.
+
+**Do NOT start the full 8-scene × 3 surround sweep on $14** — at 4× depth cost it is ~$8–15 on its
+own; top up first. Cost levers (already in the scripts): `eval.video.video_layouts=[]` during
+sweeps, `docker container/network prune -f` between runs, fewer scenes/rollouts for a first pass,
+and **`brev stop` the moment you're editing `.py`** (guest `shutdown` does not stop billing).
+Watch the clock — the camera arm is slow, so a "quick" multicam sweep is not quick.
+
 ## Box ops
 
 See `../HANDOFF.md` "Resume recipe" and the `brev-box-operational-notes` memory. Short version:
