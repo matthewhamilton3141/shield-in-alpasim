@@ -84,7 +84,17 @@ services:
       - "SHIELD_DEPTH_MODEL=${oc.env:SHIELD_DEPTH_MODEL,depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf}"
       # 5 cameras = 5x depth passes/cycle; SHIELD_DEPTH_BATCH=1 runs them as one batched call.
       - "SHIELD_DEPTH_BATCH=${oc.env:SHIELD_DEPTH_BATCH,0}"
+      # Corridor gate: drop roadside static clutter, keep only obstacles in the driving corridor
+      # (default ON for surround — dense depth reconstructs the whole street). Host SHIELD_GATE=0
+      # disables it for an A/B; SHIELD_GATE_XMAX/_HALFWIDTH/_RANGE tune the corridor.
+      - "SHIELD_GATE=${oc.env:SHIELD_GATE,1}"
+      - "SHIELD_GATE_XMAX=${oc.env:SHIELD_GATE_XMAX,25.0}"
+      - "SHIELD_GATE_HALFWIDTH=${oc.env:SHIELD_GATE_HALFWIDTH,4.0}"
+      - "SHIELD_GATE_RANGE=${oc.env:SHIELD_GATE_RANGE,20.0}"
       - "SHIELD_DEBUG_DIR=${oc.env:SHIELD_DEBUG_DIR,}"
+      # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
+      # with the BEV). Empty = off (driver.py `_dump_camera_frames`).
+      - "SHIELD_DEBUG_CAMERAS=${oc.env:SHIELD_DEBUG_CAMERAS,}"
     command:
       - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
       - "uv run -m alpasim_driver.main"

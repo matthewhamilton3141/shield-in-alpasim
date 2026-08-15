@@ -109,6 +109,11 @@ DEBUG_DIR_ENV_VAR = "SHIELD_DEBUG_DIR"
 # $SHIELD_DEBUG_DIR — for a real-scene video (front/rear views) synced with the BEV. Off by default.
 DEBUG_CAMERAS_ENV_VAR = "SHIELD_DEBUG_CAMERAS"
 
+# Geometric relevance gate on the camera obstacle field (obstacle_source.CorridorGate): drop the
+# roadside static clutter dense depth reconstructs, keep only obstacles in the ego's driving
+# corridor. SHIELD_GATE=1 enables it; optional SHIELD_GATE_XMAX / _HALFWIDTH / _RANGE tune it.
+GATE_ENV_VAR = "SHIELD_GATE"
+
 
 def forward_relevant_field(field, cfg):
     """Drop obstacle discs that sit entirely behind the ego's rear bumper.
@@ -353,6 +358,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
         model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
         depth_model = HFDepthModel(model_name, device=str(device))
+        gate = cls._corridor_gate_from_env()  # None unless SHIELD_GATE is on
         # Several advertised cameras -> the surround rig fuses them all into one field; a single
         # camera -> the original front-only source. Perception uses every advertised camera,
         # regardless of which subset the inner policy consumes.
@@ -374,18 +380,43 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
                         "No usable per-scene surround calibration (%s); falling back to FRONT-ONLY "
                         "camera perception for this scene (no surround coverage here).", exc)
                     return CameraObstacleSource.front_wide(
-                        depth_model, camera_id="camera_front_wide_120fov")
+                        depth_model, camera_id="camera_front_wide_120fov", point_filter=gate)
                 logger.info(
                     "Obstacle field from SURROUND ftheta perception (%d cams from USDZ calib, "
-                    "depth %s, batched=%s)", len(cams), model_name, batched)
-                return MultiCameraObstacleSource(depth_model, cams, batched=batched)
+                    "depth %s, batched=%s, gate=%s)", len(cams), model_name, batched, bool(gate))
+                return MultiCameraObstacleSource(depth_model, cams, batched=batched, point_filter=gate)
             logger.warning(
                 "%s not set/found (%r): surround perception falling back to FRONT-ONLY camera "
                 "perception (no scene USDZ -> no real calibration).", SCENE_ENV_VAR, usdz)
             return CameraObstacleSource.front_wide(
-                depth_model, camera_id="camera_front_wide_120fov")
-        logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)
-        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0])
+                depth_model, camera_id="camera_front_wide_120fov", point_filter=gate)
+        logger.info("Obstacle field from CAMERA perception (depth model %s, gate=%s)",
+                    model_name, bool(gate))
+        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0], point_filter=gate)
+
+    @staticmethod
+    def _corridor_gate_from_env():
+        """A `CorridorGate` when `$SHIELD_GATE` is on, else None (keep the whole field).
+
+        Optional `SHIELD_GATE_XMAX` / `SHIELD_GATE_HALFWIDTH` / `SHIELD_GATE_RANGE` override the
+        corridor bounds so the gate can be tuned on the box without a redeploy.
+        """
+        if os.environ.get(GATE_ENV_VAR, "0") != "1":
+            return None
+        from shield_in_alpasim.obstacle_source import CorridorGate
+
+        def _f(name, default):
+            v = os.environ.get(name)
+            return float(v) if v else default
+
+        gate = CorridorGate(
+            x_max=_f("SHIELD_GATE_XMAX", 25.0),
+            half_width=_f("SHIELD_GATE_HALFWIDTH", 4.0),
+            max_range_m=_f("SHIELD_GATE_RANGE", 20.0),
+        )
+        logger.info("Corridor gate ON: x<=%.1f, |y|<=%.1f, range<=%.1f",
+                    gate.x_max, gate.half_width, gate.max_range_m)
+        return gate
 
     @staticmethod
     def _build_inner_model(model_cfg, device, camera_ids, context_length, output_frequency_hz):

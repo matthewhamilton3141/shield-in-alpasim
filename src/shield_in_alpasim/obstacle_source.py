@@ -180,6 +180,41 @@ def occupancy_to_circles(xy: np.ndarray, cell_m: float, max_range_m: float,
     return np.column_stack([centres, np.full(len(centres), radius)])
 
 
+@dataclass
+class CorridorGate:
+    """Geometric relevance gate on rig-frame points — the *filter seam* for cleaning perception.
+
+    Dense monocular depth over the surround rig reconstructs the WHOLE street (building facades,
+    curbs, parked cars on both sides) — ~2500 discs/cycle, of which only a couple dozen are ever in
+    the ego's driving path. The rest is static roadside clutter the forward-braking shield never
+    acts on, but it buries the real threats, looks like chaos, and risks a phantom brake from a
+    stray in-path point. This keeps only points inside a corridor around the forward path:
+
+        x in [x_min, x_max]   (rig x is forward; a little behind, out to braking range ahead)
+        |y| <= half_width     (a few lanes wide — keeps lead + adjacent-lane + cross traffic)
+        and within max_range_m of the ego.
+
+    Pure geometry (numpy), so it's unit-tested off the box. It is one pluggable stage: a semantic
+    filter (keep only vehicles/pedestrians) can stack in the same seam later — see the obstacle
+    sources' `point_filter` and docs/MULTICAM_HANDOFF.md.
+    """
+
+    x_min: float = -3.0
+    x_max: float = 25.0
+    half_width: float = 4.0
+    max_range_m: float = 20.0
+
+    def __call__(self, pts_rig) -> np.ndarray:
+        pts = np.asarray(pts_rig, float).reshape(-1, 3)
+        if len(pts) == 0:
+            return np.zeros(0, bool)
+        x, y = pts[:, 0], pts[:, 1]
+        keep = (x >= self.x_min) & (x <= self.x_max) & (np.abs(y) <= self.half_width)
+        if self.max_range_m is not None:
+            keep &= np.hypot(x, y) <= self.max_range_m
+        return keep
+
+
 class CameraObstacleSource:
     """`ObstacleSource` backed by a monocular metric-depth net over one camera.
 
@@ -192,7 +227,7 @@ class CameraObstacleSource:
 
     def __init__(self, depth_model, camera_id: str, intrinsics, rig_to_camera,
                  ref_hw=FRONT_WIDE_REF_HW, ground_band=(0.3, 2.5), max_range_m: float = 40.0,
-                 cell_m: float = 0.5, min_pts: int = 5, stride: int = 2):
+                 cell_m: float = 0.5, min_pts: int = 5, stride: int = 2, point_filter=None):
         self._depth = depth_model
         self._camera_id = camera_id
         self._fx, self._fy, self._cx, self._cy = intrinsics
@@ -205,6 +240,9 @@ class CameraObstacleSource:
         self._cell_m = cell_m
         self._min_pts = min_pts
         self._stride = stride
+        # Optional relevance filter on rig-frame points (e.g. CorridorGate) — the pluggable seam
+        # that drops roadside clutter; None = keep everything the height band passes.
+        self._point_filter = point_filter
 
     def _intrinsics_for(self, h: int, w: int) -> tuple[float, float, float, float]:
         """Intrinsics rescaled from the reference resolution to the actual frame `(h, w)`.
@@ -244,7 +282,10 @@ class CameraObstacleSource:
         fx, fy, cx, cy = self._intrinsics_for(*depth.shape[:2])
         pts_cam = backproject_depth(depth, fx, fy, cx, cy, self._max_range_m, self._stride)
         pts_rig = camera_to_rig(pts_cam, self._R, self._t)
-        obstacles = pts_rig[height_band_mask(pts_rig, *self._ground_band)]
+        keep = height_band_mask(pts_rig, *self._ground_band)
+        if self._point_filter is not None:
+            keep = keep & self._point_filter(pts_rig)
+        obstacles = pts_rig[keep]
         circles = occupancy_to_circles(
             obstacles[:, :2], self._cell_m, self._max_range_m, self._min_pts
         )
@@ -423,7 +464,7 @@ class MultiCameraObstacleSource:
 
     def __init__(self, depth_model, cameras, ground_band=(0.3, 2.5),
                  max_range_m: float = 40.0, cell_m: float = 0.5, min_pts: int = 5,
-                 stride: int = 2, batched: bool = False):
+                 stride: int = 2, batched: bool = False, point_filter=None):
         # `cameras` is any list of camera models exposing `.camera_id` and
         # `.points_rig(depth, max_range_m, stride)` — pinhole `CameraCalib` or fisheye
         # `FthetaCamera`. The fusion loop is identical; only the per-camera un-projection differs.
@@ -437,6 +478,9 @@ class MultiCameraObstacleSource:
         self._min_pts = min_pts
         self._stride = stride
         self._batched = batched
+        # Optional relevance filter on the fused rig-frame points (e.g. CorridorGate) — the same
+        # pluggable seam the single-cam source has; None = keep everything the height band passes.
+        self._point_filter = point_filter
 
     @classmethod
     def surround(cls, depth_model, camera_ids: list[str], **kwargs) -> "MultiCameraObstacleSource":
@@ -472,7 +516,10 @@ class MultiCameraObstacleSource:
             chunks.append(rig_pts)
             per_cam.append(len(rig_pts))
         pts_rig = np.concatenate(chunks) if chunks else np.zeros((0, 3))
-        obstacles = pts_rig[height_band_mask(pts_rig, *self._ground_band)]
+        keep = height_band_mask(pts_rig, *self._ground_band)
+        if self._point_filter is not None:
+            keep = keep & self._point_filter(pts_rig)
+        obstacles = pts_rig[keep]
         circles = occupancy_to_circles(
             obstacles[:, :2], self._cell_m, self._max_range_m, self._min_pts)
 

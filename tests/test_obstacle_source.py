@@ -16,6 +16,7 @@ from shield_in_alpasim.obstacle_source import (
     SURROUND_RIG_TO_CAMERA,
     CameraCalib,
     CameraObstacleSource,
+    CorridorGate,
     FthetaCamera,
     MultiCameraObstacleSource,
     backproject_depth,
@@ -313,3 +314,59 @@ def test_real_rig_covers_360_degrees_no_blind_wedge():
     for deg in range(-180, 180):
         covered = any(abs((deg - b + 180) % 360 - 180) <= hf for b, hf in sectors)
         assert covered, f"blind spot at bearing {deg} deg"
+
+
+# --- the corridor gate (relevance filter seam) ---
+
+
+def test_corridor_gate_keeps_path_drops_clutter():
+    gate = CorridorGate(x_min=-3.0, x_max=25.0, half_width=4.0, max_range_m=20.0)
+    pts = np.array([
+        [10.0, 0.0, 0.0],    # lead vehicle, dead ahead        -> keep
+        [8.0, 3.0, 0.0],     # adjacent lane, ahead-left        -> keep
+        [5.0, 12.0, 0.0],    # building facade far to the side  -> drop (|y| > 4)
+        [30.0, 0.0, 0.0],    # far ahead, past x_max            -> drop
+        [-8.0, 0.0, 0.0],    # well behind                      -> drop (x < x_min)
+        [15.0, 13.0, 0.0],   # far corner, beyond range         -> drop (range > 20)
+    ])
+    keep = gate(pts)
+    assert keep.tolist() == [True, True, False, False, False, False]
+
+
+def test_corridor_gate_empty():
+    assert CorridorGate()(np.zeros((0, 3))).shape == (0,)
+
+
+def test_point_filter_seam_drops_the_roadside_blob():
+    # Two blobs: one ahead in-lane (kept), one far to the side (roadside clutter, dropped by the
+    # gate). The seam composes with the height band and cuts the field to what matters.
+    depth = np.zeros((100, 100))
+    depth[45:55, 45:55] = 10.0          # central patch -> ~ahead
+    front = _calib("front", _M_CAM_TO_RIG)
+    gate = CorridorGate(x_min=-3, x_max=25, half_width=4.0, max_range_m=20.0)
+    src = MultiCameraObstacleSource(
+        lambda img: img, [front], ground_band=(-100.0, 100.0),
+        max_range_m=40.0, cell_m=1.0, min_pts=3, point_filter=gate)
+    field = src.field_for(_multi_prediction_input({"front": depth}))
+    # Everything kept is within the corridor.
+    c = field.circles
+    assert len(c) > 0
+    assert np.all(np.abs(c[:, 1]) <= 4.0 + 1.0)   # |y| within half_width (+disc radius slack)
+    assert np.all(c[:, 0] <= 25.0 + 1.0)
+
+
+def test_gate_reduces_disc_count_vs_no_gate():
+    # Two obstacle patches — one centred (in-corridor), one at the image edge (far to the side,
+    # roadside clutter). Ungated keeps both; the gate drops the lateral one -> fewer discs.
+    front = _calib("front", _M_CAM_TO_RIG)
+    depth = np.zeros((100, 100))
+    depth[45:55, 45:55] = 8.0     # centred -> ahead, in corridor
+    depth[45:55, 90:99] = 8.0     # image edge -> far lateral, roadside
+    common = dict(ground_band=(-100.0, 100.0), max_range_m=40.0, cell_m=1.0, min_pts=3)
+    ungated = MultiCameraObstacleSource(lambda img: img, [front], **common)
+    gated = MultiCameraObstacleSource(lambda img: img, [front],
+                                      point_filter=CorridorGate(half_width=2.0, max_range_m=15.0),
+                                      **common)
+    n_un = len(ungated.field_for(_multi_prediction_input({"front": depth})).circles)
+    n_g = len(gated.field_for(_multi_prediction_input({"front": depth})).circles)
+    assert 0 < n_g < n_un
