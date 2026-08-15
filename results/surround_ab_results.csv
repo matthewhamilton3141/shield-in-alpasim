@@ -1,0 +1,5 @@
+scene,arm,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,front,0.0,0.0,0.0,79.1,73.8,1.0,1.0,pass
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,surround,0.0,0.0,0.0,78.5,73.8,1.0,1.0,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,front,0.0,0.0,0.0,102.2,107.5,0.946,1.0,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,surround,,,,,,,,MISSING

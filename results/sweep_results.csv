@@ -1,0 +1,17 @@
+scene,arm,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,unshielded,0.0,0.0,0.0,78.5,73.8,1.0,1.0,pass
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,shielded,0.0,0.0,0.0,78.8,73.8,1.0,1.0,pass
+clipgt-023b7fcc-671c-40e3-9bd2-c66b0b073fbc,unshielded,0.0,0.0,0.0,108.3,106.9,1.0,1.0,pass
+clipgt-023b7fcc-671c-40e3-9bd2-c66b0b073fbc,shielded,0.0,0.0,0.0,103.9,106.9,0.97,1.0,pass
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,unshielded,0.0,1.0,0.0,85.8,169.8,0.505,0.611,pass
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,shielded,0.3333333333333333,0.6666666666666666,0.0,69.3,169.8,0.407,0.511,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,unshielded,0.0,0.0,0.0,111.7,107.5,1.0,1.0,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,shielded,0.0,0.0,0.0,96.7,107.5,0.898,1.0,pass
+clipgt-02e075b9-fd24-426b-971b-7cfcb2074cc9,unshielded,0.0,0.0,0.6666666666666666,88.0,162.5,0.53,0.0,fail
+clipgt-02e075b9-fd24-426b-971b-7cfcb2074cc9,shielded,0.0,0.0,0.0,168.0,162.5,1.0,1.0,pass
+clipgt-02eadd92-02f1-46d8-86fe-a9e338fed0b6,unshielded,1.0,0.0,0.0,60.9,93.9,0.649,0.0,fail
+clipgt-02eadd92-02f1-46d8-86fe-a9e338fed0b6,shielded,0.0,0.0,0.0,87.4,93.9,0.908,1.0,pass
+clipgt-032b6f21-6799-4ad8-8712-0405f087ac4a,unshielded,0.0,0.0,0.0,196.7,214.4,0.916,1.0,pass
+clipgt-032b6f21-6799-4ad8-8712-0405f087ac4a,shielded,0.0,0.3333333333333333,0.0,194.8,214.4,0.895,0.961,pass
+clipgt-04394343-92f3-409c-9695-e7cd5397fa02,unshielded,0.0,0.0,0.0,240.7,299.2,0.803,1.0,pass
+clipgt-04394343-92f3-409c-9695-e7cd5397fa02,shielded,0.0,0.0,0.0,95.6,299.2,0.318,0.48,pass

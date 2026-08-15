@@ -1,0 +1,3 @@
+scene,SHIELD_OOD_GUARD,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status
+clipgt-04394343-92f3-409c-9695-e7cd5397fa02,0,1.0,0.0,0.0,63.8,299.2,0.212,0.0,fail
+clipgt-04394343-92f3-409c-9695-e7cd5397fa02,1,0.0,0.0,0.0,127.9,299.2,0.427,0.529,pass
