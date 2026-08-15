@@ -3,10 +3,40 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> **▶ NEXT SESSION: surround-camera perception.** The camera arm uses only the *front* camera, so
-> the shield is blind to the sides/rear — a visible collision on `02eadd92` was with a
-> laterally-adjacent car the front cam can't see (evidence in the dumps). The focused plan to add
-> side + rear cameras is in **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)** — start there.
+> **▶ NEXT SESSION: stand up on Lambda ($7,500 credits) and run the degradation curve.** The Brev
+> box is **deleted** (its GPU died with `RmInitAdapter`, and Lambda credits landed). Bring up a
+> fresh box with **`scripts/setup_box.sh`** (one command, `HF_TOKEN=...`), then work **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**:
+> Tier 0 (validate the semantic filter on real fisheye frames — the one thing left unproven), then
+> Tier 1 (the degradation curve with n≥10). Lambda has **no stop-and-preserve** — terminate when
+> idle; put `data/` on a persistent filesystem. The multicam detail is in **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
+
+---
+
+## ★ STATE AT /CLEAR (2026-08-15) — surround perception done + cleaned; box deleted; Lambda incoming
+
+The camera arm is now a real **5-camera ftheta 360° surround** with clean perception. What shipped
+this session (all committed + pushed to `phase3-container-wiring`; 98 tests; details in
+`docs/MULTICAM_HANDOFF.md`):
+
+- **Surround perception, done right.** Real per-scene **ftheta (fisheye) calibration** loaded from
+  the USDZ (`parse_cameras_from_usdz`); the true rig covers 360° (rear cams point to the rear
+  quarters). Turned `02eadd92` from an at-fault **fail → PASS**. Two scene-variation robustness bugs
+  fixed (polynomial direction; scenes with no calibration → front-only fallback).
+- **Perception cleanup (pluggable filter seam).** `CorridorGate` (geometry) cut the field from
+  ~2,500 discs to the ~few-dozen in the driving corridor (**97% was roadside clutter**);
+  `SemanticDepthMask` (SegFormer, keep vehicle/pedestrian pixels) stacks in the same seam.
+  **⚠ Semantic is code-complete + unit-tested but NOT yet validated on real fisheye frames** — the
+  Brev GPU died before that render. First thing to check on Lambda.
+- **Portfolio visuals (light-themed, [[light-themed-visuals]]).** Shield's-eye BEV (gated), real-scene
+  front+rear camera video, and a clean **world-frame top-down** (`dump_scene_topdown.py` +
+  `scene_topdown_video.py`, no NuRec — vector map + actor boxes + ego trail).
+- **Infra:** Brev box **deleted** (billing stopped). Box-only artifacts rescued into the repo
+  (`data/download_vavam_assets.sh`, `results/*.csv`). New: **`scripts/setup_box.sh`** (one-command
+  Lambda bring-up) + **`docs/COMPUTE_PLAN.md`** ($7,500 → degradation curve + shielded-RL flagship).
+
+**Honest open items:** semantic-on-fisheye unvalidated; NuRec smears off-trajectory (caps how far
+camera perception is trustworthy); every result so far is n=1–3 (VaVAM is stochastic) — the whole
+point of Tier 1 is n≥10.
 
 ---
 
