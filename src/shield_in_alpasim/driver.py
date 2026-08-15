@@ -354,17 +354,27 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             # rear-quarter angles (full 360, no blind wedge). Needs the scene USDZ armed.
             usdz = os.environ.get(SCENE_ENV_VAR)
             if usdz and os.path.exists(usdz):
-                cams = load_ftheta_cameras(usdz, list(camera_ids))
+                try:
+                    cams = load_ftheta_cameras(usdz, list(camera_ids))
+                except (FileNotFoundError, KeyError) as exc:
+                    # Some scenes ship no per-clip calibration parquet (the renderer then uses a
+                    # synthesized rig), or lack one of the requested cameras. We can't do correct
+                    # surround geometry without it, so degrade to the verified front-only pinhole
+                    # arm rather than crash the run (or use the mis-posed hardcoded surround rig).
+                    logger.warning(
+                        "No usable per-scene surround calibration (%s); falling back to FRONT-ONLY "
+                        "camera perception for this scene (no surround coverage here).", exc)
+                    return CameraObstacleSource.front_wide(
+                        depth_model, camera_id="camera_front_wide_120fov")
                 logger.info(
                     "Obstacle field from SURROUND ftheta perception (%d cams from USDZ calib, "
                     "depth %s, batched=%s)", len(cams), model_name, batched)
                 return MultiCameraObstacleSource(depth_model, cams, batched=batched)
             logger.warning(
-                "%s not set/found (%r): surround perception falling back to the HARDCODED pinhole "
-                "rig — geometry is approximate and has rear-quarter blind wedges. Arm the scene "
-                "USDZ for the real ftheta calibration.", SCENE_ENV_VAR, usdz)
-            return MultiCameraObstacleSource.surround(
-                depth_model, list(camera_ids), batched=batched)
+                "%s not set/found (%r): surround perception falling back to FRONT-ONLY camera "
+                "perception (no scene USDZ -> no real calibration).", SCENE_ENV_VAR, usdz)
+            return CameraObstacleSource.front_wide(
+                depth_model, camera_id="camera_front_wide_120fov")
         logger.info("Obstacle field from CAMERA perception (depth model %s)", model_name)
         return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0])
 
