@@ -58,8 +58,14 @@ fi
 
 echo "== 2. alpasim env (Rust toolchain for utils_rs, then uv sync) =="
 cd "$ALPASIM_DIR"
-# setup_local_env.sh must be SOURCED (it installs Rust into the current shell), not executed.
-[ -f ./setup_local_env.sh ] && source ./setup_local_env.sh || true
+# Pre-install Rust non-interactively so setup_local_env.sh doesn't hang on its [y/N] prompt.
+command -v cargo >/dev/null || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+export PATH="$HOME/.cargo/bin:$PATH"
+export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"   # setup_local_env.sh references it (unbound under set -u)
+# It must be SOURCED (installs into the shell), and it isn't written for set -euo pipefail — relax around it.
+set +eu
+[ -f ./setup_local_env.sh ] && source ./setup_local_env.sh
+set -eu
 uv sync --extra all
 
 echo "== 3. install our plugin (--no-deps is REQUIRED: our alpasim_* deps are workspace pkgs) =="
