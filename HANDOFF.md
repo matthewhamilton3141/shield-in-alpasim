@@ -3,17 +3,25 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> ## ✅ Tier 0 + Tier 1 DONE (n=10) — box KEPT UP for Tier 2 (shielded-RL is NEXT)
-> As of 2026-08-16 the full result is **done, committed, and pushed** (Tier 0 + the n=10 Tier 1
-> degradation ladder + mechanism + hero video + write-up). **The box is left running on purpose** —
-> the user has ~$7.5k Lambda credits and is starting **Tier 2 (shielded-RL)** next, so **connect to
-> the existing box, don't terminate or re-bring-up.** (It burns ~$30–45/day idle — fine against the
-> credits, but don't leave it idle for weeks.) **▶ Tier 2 kickoff prompt: [`docs/TIER2_KICKOFF.md`](docs/TIER2_KICKOFF.md)** — read it first.
-> - **Connect:** `ssh ubuntu@150.136.71.147` (key `~/.ssh/id_ed25519`; IP ephemeral — check the
->   Lambda console). State: `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on
->   `phase3-container-wiring`, **102 tests pass**, VaVAM-S + curated scenes downloaded, the
->   `SHIELD_SIDE_CORRIDOR` fix rsynced (off by default). A100 driver 580, CUDA 12.8. `shield-data` persists.
-> - **If the box got terminated anyway:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
+> ## ✅ Tier 0 + Tier 1 DONE (n=10) · ✅ Tier 2 feasibility probe = **GO** (2026-08-16)
+> Tier 0 + the n=10 Tier 1 degradation ladder are done/committed/pushed. **Tier 2 (safe RL via
+> shielding) is scoped and GREENLIT by a CPU-only probe** — see **[`docs/TIER2_PROBE.md`](docs/TIER2_PROBE.md)**.
+> Key finding: **AlpaSim has NO RL interface** (gRPC eval harness — no reward/reset/step; each step is a
+> render + docker bring-up → training against it is infeasible). The feasible path, now demonstrated:
+> **train a low-dim policy in the kitti_nav numpy surrogate *under the shield* (`safety_shield` as the
+> per-step veto), then EVAL the learned policy in AlpaSim.** Probe result (`scripts/rl_probe.py`,
+> `src/shield_in_alpasim/rl_env.py`, `results/rl_probe.{png,csv}`): shielded arm return 7.4→17.7 with
+> **0 training collisions** and 30% held-out goal-rate; unshielded arm **654 collisions** and collapsed
+> to a do-nothing policy (return ~0). Shielding made learning *safe AND tractable*. **110 tests pass.**
+> - **A100 TERMINATE decision (2026-08-16):** the probe is CPU-only — the idle A100 (~$30–45/day) is NOT
+>   needed. User chose to terminate; re-provision with `setup_box.sh` only for the AlpaSim eval step of
+>   the scaled run. (Termination is a Lambda-console/API action — no Lambda key on the Mac.)
+> - **Next (scaled Tier 2, still ~$0 CPU + ~$10–30 eval):** real MLP + PPO, obstacle fields sampled from
+>   the 10 curated NuRec scenes, ≥5 seeds/arm with error bars; then eval the shield-trained policy in
+>   AlpaSim (incl. the learned-camera obstacle seam from Tier 1). See `docs/TIER2_PROBE.md` §Verdict.
+> - **Connect (if re-provisioned):** `ssh ubuntu@<IP>` (key `~/.ssh/id_ed25519`; IP ephemeral — Lambda
+>   console). `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on `phase3-container-wiring`.
+> - **If the box got terminated:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
 > - **HF token:** NOT stored here (public repo). Re-supply `HF_TOKEN` inline for scene downloads —
 >   never write it to the repo/FS.
 >
