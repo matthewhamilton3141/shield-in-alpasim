@@ -3,8 +3,9 @@
 **A hard safety shield — one that provably holds 0 collisions on real KITTI drives — filtering a
 learned camera policy (VaVAM) inside NVIDIA's photoreal closed-loop AV sim (AlpaSim). The result:
 the shield's guarantee holds under *ground-truth* geometry, but when its obstacle field comes from
-learned camera perception the at-fault collision rate degrades ~4×, at unchanged progress — and the
-degradation has a specific, measured mechanism.**
+learned camera perception the at-fault collision rate degrades by roughly an order of magnitude
+(near-zero → 0.23), at unchanged progress — and the degradation has a specific, measured
+mechanism.**
 
 This is the write-up. The running log and every dead end are in [`../HANDOFF.md`](../HANDOFF.md);
 the code entry points are in [`../README.md`](../README.md).
@@ -55,27 +56,29 @@ tracking the real vehicles despite the fisheye curvature. No gate-only fallback 
 
 ## Tier 1 — the degradation, across the perception ladder
 
-10 curated NuRec scenes (screened so VaVAM stays on-route — drift is a separate confound), n = 5
-rollouts each. Obstacle field swept across four rungs from perfect geometry to the full learned
-stack:
+10 curated NuRec scenes (screened so VaVAM stays on-route — drift is a separate confound). The two
+endpoints (GT and surround-semantic) are at **n = 10**; the middle rungs at n = 5 (texture).
+Obstacle field swept across four rungs from perfect geometry to the full learned stack:
 
 ![ladder](../results/tier1_ladder.png)
 
-| at-fault (10 scenes, n = 5) | GT | front (mono) | surround (gated) | surround (+ semantic) |
+| at-fault | GT | front (mono) | surround (gated) | surround (+ semantic) |
 | --- | --- | --- | --- | --- |
-| collision rate | 0.06 | 0.20 | 0.34 | 0.24 |
-| route progress | 0.62 | 0.70 | 0.54 | 0.60 |
+| collision rate | 0.02 | 0.20 | 0.34 | 0.23 |
+| route progress | 0.62 | 0.70 | 0.54 | 0.59 |
 
 **Every learned rung degrades the guarantee 3–6× versus ground truth, and it is *not* monotonic in
 "sophistication."** Surround-gated is the worst: its side cameras feed the shield abeam actors that
 trip kitti-nav's omnidirectional-clearance over-braking (the progress dip to 0.54), while its
 geometric gate still under-perceives the collision-relevant obstacle. The semantic filter *helps*
-over gate-only (0.34 → 0.24). The headline, controlled contrast is **GT vs surround-semantic: ~4×**.
+over gate-only (0.34 → 0.23). The headline, controlled contrast is **GT vs surround-semantic**: the
+shield with true geometry is essentially crash-free (**0.02**), learned perception takes it to
+**0.23** — roughly an order of magnitude.
 
 ![degradation](../results/tier1_degradation.png)
 
 **The degradation is in *safety*, not mobility** — progress is essentially flat across the swap
-(0.62 → 0.60). "More collisions, same distance."
+(0.62 → 0.59). "More collisions, same distance."
 
 ## The mechanism — the shield fails on the one obstacle that matters
 
@@ -86,12 +89,13 @@ Is the degradation just "camera sees fewer obstacles"? No — and this is the mo
 The shield is **remarkably robust to losing most of its perception.** On several scenes the camera
 recovers only 14–40% of the true obstacle field — losing 60–86% of it — at **zero** safety cost
 (`065dcac9`: 84 obstacles → 13, still 0 crashes). Aggregate obstacle count is a *poor* predictor of
-degradation. The shield breaks on only 4 of 10 scenes, in two distinct modes:
+degradation. The shield breaks on only 3 of 10 scenes, in two distinct modes:
 
-- **Under-count (3 scenes)** — the perception drops the specific collision-relevant obstacle.
+- **Under-count (2 scenes)** — the perception drops the specific collision-relevant obstacle.
   Sharpest case `048b974e`: GT carries ~250 obstacles/cycle and the shield never crashes; the camera
-  carries ~40, misses the lead vehicle, and crashes in 4 of 5 rollouts.
-- **Mis-location (1 scene)** — `01d503d4`: the camera recovers the *full* field (ratio ~1.0) but
+  carries ~70, misses the lead vehicle, and crashes in 7 of 10 rollouts (`0245ff75` is the same
+  story, ~135 → 22, crashing all 10).
+- **Mis-location (1 scene)** — `01d503d4`: the camera recovers the *full* field (ratio ~0.9) but
   places the relevant vehicle wrong, so the certificate is computed against a phantom.
 
 So the honest, sharper claim is not "learned perception is worse" but: **a hard shield tolerates
@@ -110,8 +114,9 @@ The hard shield turns a guaranteed crash into a clean drive. (Clips in `out_tier
 
 ## Honest caveats
 
-- **VaVAM is stochastic**; n = 5 gives wide error bars, so the 4× is directional. A tightening pass
-  at **n = 10** is the rigor step (in progress at time of writing).
+- **VaVAM is stochastic.** The headline endpoints are at n = 10; the per-scene at-fault rates still
+  carry sizable variance (std up to ~0.5 on crash scenes), so read *per-scene* numbers as
+  directional — but the aggregate contrast (GT ~0.02 vs camera ~0.23) is robust across the sweep.
 - The **front-camera rung is ungated** by config, so it is texture, not a controlled variable; the
   clean contrast is GT vs surround-semantic.
 - A tried-and-rejected fix: dropping abeam actors to cut the over-braking (`SHIELD_SIDE_CORRIDOR`)

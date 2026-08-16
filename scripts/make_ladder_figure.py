@@ -70,8 +70,9 @@ ax2.set_xticks(x)
 ax2.set_xticklabels(labels, fontsize=9)
 ax2.set_ylim(0, 1.0)
 
-fig.suptitle("Perception ladder — hard shield over VaVAM, 10 NuRec scenes × n=5",
-             fontsize=13, weight="bold", y=1.0)
+fig.suptitle("Perception ladder — hard shield over VaVAM, 10 NuRec scenes "
+             "(GT & surround-semantic n=10; middle rungs n=5)",
+             fontsize=12.5, weight="bold", y=1.0)
 fig.text(0.5, 0.005,
          "obstacle field: ground-truth actors  →  front mono depth  →  surround ftheta + corridor gate "
          " →  + SegFormer semantic filter.   front rung is ungated (config), so treat it as texture; "

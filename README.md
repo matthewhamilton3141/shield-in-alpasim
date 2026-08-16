@@ -61,39 +61,41 @@ it — the exact failure a safety shield exists to catch. This repo now measures
 head-on. A real 5-camera **ftheta surround** rig (per-scene fisheye calibration read from the USDZ)
 feeds monocular metric depth (Depth-Anything) and a **SegFormer** semantic filter into the same
 shield; SegFormer was first verified to label vehicles/pedestrians correctly on the distorted
-fisheye frames. Then, across **10 curated NuRec scenes × n = 5 rollouts**, the obstacle field was
+fisheye frames. Then, across **10 curated NuRec scenes × n = 10 rollouts**, the obstacle field was
 swapped between ground-truth actors and camera perception with everything else held fixed:
 
-| 10 scenes, n = 5 | GT geometry | learned camera perception |
+| 10 scenes, n = 10 | GT geometry | learned camera perception |
 | --- | --- | --- |
-| **at-fault collision rate** | **0.06** | **0.24** (~4×) |
-| route progress | 0.62 | 0.60 (≈ equal) |
+| **at-fault collision rate** | **0.02** | **0.23** (~10×) |
+| route progress | 0.62 | 0.59 (≈ equal) |
 
 ![Per-scene degradation](results/tier1_degradation.png)
 
-**Learned camera perception roughly quadruples the shield's at-fault collision rate at essentially
-unchanged progress — the degradation is in *safety*, not mobility.** The mechanism is concrete: the
-camera **under-perceives in dense traffic**. On the sharpest scene the GT field carries ~250
-obstacles per cycle and the shield never crashes; the camera field carries ~40, misses the
-collision-relevant one, and crashes in 4 of 5 rollouts. On another, the obstacle *counts* match but
-the camera *mis-locates* the relevant vehicle. "Provably no collisions" becomes "no collisions *if
-perception was right*," and this measures how much it isn't.
+**Learned camera perception takes the shield's at-fault rate from near-zero (0.02, essentially
+crash-free with true geometry) to 0.23 — roughly an order of magnitude — at unchanged progress. The
+degradation is in *safety*, not mobility.** The mechanism is concrete: the camera **under-perceives
+in dense traffic**. On the sharpest scene the GT field carries ~250 obstacles per cycle and the
+shield never crashes; the camera field carries ~70, misses the collision-relevant one, and crashes
+in 7 of 10 rollouts. On another the obstacle *counts* match but the camera *mis-locates* the
+relevant vehicle. "Provably no collisions" becomes "no collisions *if perception was right*," and
+this measures how much it isn't.
 
 Filling in the middle rungs of the perception ladder — front-camera mono depth, and surround
 without the semantic filter — turns the two endpoints into a full gradient:
 
 ![Perception ladder](results/tier1_ladder.png)
 
-| at-fault (10 scenes, n = 5) | GT | front (mono) | surround (gated) | surround (+ semantic) |
+| at-fault (GT & semantic n=10; middle n=5) | GT | front (mono) | surround (gated) | surround (+ semantic) |
 | --- | --- | --- | --- | --- |
-| collision rate | 0.06 | 0.20 | 0.34 | 0.24 |
-| route progress | 0.62 | 0.70 | 0.54 | 0.60 |
+| collision rate | 0.02 | 0.20 | 0.34 | 0.23 |
+| route progress | 0.62 | 0.70 | 0.54 | 0.59 |
 
-**Every learned rung degrades the guarantee 3–6× versus ground truth — and it is *not* monotonic in
-"sophistication."** Surround-gated is the *worst* (0.34): its side cameras feed the shield abeam
-actors that trip kitti-nav's omnidirectional-`clearance` over-braking (visible as the progress dip,
-0.54), while its geometric gate still under-perceives the collision-relevant obstacle. Adding the
-**semantic filter helps** (0.34 → 0.24) by keeping actor pixels and dropping clutter. Front-mono has
+**Every learned rung degrades the guarantee sharply versus ground truth (GT is essentially
+crash-free) — and it is *not* monotonic in "sophistication."** Surround-gated is the *worst* (0.34):
+its side cameras feed the shield abeam actors that trip kitti-nav's omnidirectional-`clearance`
+over-braking (visible as the progress dip, 0.54), while its geometric gate still under-perceives the
+collision-relevant obstacle. Adding the **semantic filter helps** (0.34 → 0.23) by keeping actor
+pixels and dropping clutter. Front-mono has
 the *highest* progress (0.70 — a forward cone can't over-brake for side actors) but degrades safety
 too. The lesson: more cameras and coverage are not automatically safer under a shield tuned for a
 narrower domain; *what* the perception feeds the certificate matters more than *how much*. (The
@@ -101,8 +103,9 @@ front rung is ungated by config, so read it as texture; the controlled contrast 
 surround-semantic. The side-actor over-braking is addressed by a staged, gated fix —
 `SHIELD_SIDE_CORRIDOR`, pending a box A/B.)
 
-Honest caveats: n = 5 with high run-to-run variance (VaVAM is stochastic), so the numbers are
-directional — n ≥ 10 would tighten the error bars. The GT baseline uses AlpaSim's near-clean
+Honest caveats: the headline endpoints (GT, surround-semantic) are at n = 10; per-scene at-fault
+rates still carry sizable variance (VaVAM is stochastic), so read them as directional — but the
+aggregate contrast (GT ~0.02 vs camera ~0.23) is robust. The GT baseline uses AlpaSim's near-clean
 `rig_est` ego frame (localization noise is identity by default), so this isolates *perception*, not
 localization. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam detail in
 [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).

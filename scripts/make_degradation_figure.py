@@ -43,7 +43,7 @@ ax1.bar(x - w / 2, gt_af, w, yerr=gt_afe, capsize=3, label="ground-truth geometr
 ax1.bar(x + w / 2, cam_af, w, yerr=cam_afe, capsize=3, label="learned camera perception",
         color=CAM_C, ecolor="#888")
 ax1.set_ylabel("at-fault collision rate")
-ax1.set_title("Learned camera perception degrades the hard shield's safety guarantee ~4×",
+ax1.set_title("Learned camera perception degrades the hard shield's safety guarantee ~10×",
               fontsize=13, weight="bold", pad=12)
 ax1.set_xticks(x)
 ax1.set_xticklabels(labels, rotation=30, ha="right", fontsize=9)
@@ -72,7 +72,7 @@ ax2.set_ylim(0, 1.05)
 ax2.legend(frameon=False, loc="upper right", fontsize=9)
 
 fig.text(0.5, 0.005,
-         "shield over VaVAM, surround ftheta perception  |  10 NuRec scenes, n=5 rollouts each  "
+         "shield over VaVAM, surround ftheta perception  |  10 NuRec scenes, n=10 rollouts each  "
          "|  obstacle field: GT actors vs camera (Depth-Anything metric + SegFormer)",
          ha="center", fontsize=8.5, color="#666")
 fig.tight_layout(rect=[0, 0.02, 1, 1])

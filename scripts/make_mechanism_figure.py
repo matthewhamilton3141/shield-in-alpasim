@@ -72,8 +72,8 @@ ax.set_ylabel("at-fault degradation  (camera − GT)")
 ax.set_title("The shield tolerates losing most of its perception —\nit breaks only on the one "
              "obstacle that matters", fontsize=13, weight="bold")
 ax.set_ylim(-0.06, 0.95)
-fig.text(0.5, 0.005, "10 NuRec scenes, n=5.  Aggregate obstacle count is a poor predictor of "
-         "degradation: 4 scenes crash (3 undercount, 1 mislocation), but heavy undercount alone is "
+fig.text(0.5, 0.005, "10 NuRec scenes, n=10.  Aggregate obstacle count is a poor predictor of "
+         "degradation: 3 scenes crash (2 undercount, 1 mislocation), but heavy undercount alone is "
          "tolerated.", ha="center", fontsize=8, color="#666")
 fig.tight_layout(rect=[0, 0.03, 1, 1])
 fig.savefig("results/tier1_mechanism.png", dpi=150)

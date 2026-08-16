@@ -15,14 +15,14 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 > - **HF token:** NOT stored here (public repo). The user must re-supply `HF_TOKEN` for scene
 >   downloads — pass it inline, never write it to the repo/FS.
 >
-> **▶ NEXT: tighten Tier 1 (n≥10) + write up.** Tier 0 DONE and **Tier 1 first pass DONE** (both
-> sections below): the headline is **learned camera perception degrades the shield's at-fault rate
-> ~4× (0.06→0.24) at ~equal progress**, mechanism = camera under-perceives/mislocates obstacles in
-> dense traffic (`results/tier1_degradation.{csv,png}`). It's n=5 with high variance — re-run at
-> **n≥10** to tighten the error bars, optionally add the middle rungs (+loc-noise, front-only) for
-> the full ladder, then write up. Sweep scripts: `scripts/box/{screen,validate,diag,tier1}.sh`. Plan:
-> **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up (if terminated):
-> `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam:
+> **▶ NEXT: PR to `main`, then decide on Tier 2.** Tier 0 + Tier 1 DONE **at n=10** (sections below):
+> **learned camera perception takes the shield's at-fault rate from ~0.02 (GT, essentially crash-free)
+> to ~0.23 — roughly an order of magnitude — at flat progress**, mechanism = camera
+> under-perceives/mislocates the *collision-relevant* obstacle in dense traffic (the shield tolerates
+> losing 60–86% of the field otherwise). Write-up: **[`docs/RESULTS.md`](docs/RESULTS.md)** + system
+> diagram + 3 figures. The result is shippable — **PR the branch to `main`**. The only big remaining
+> build is **Tier 2 shielded-RL** (COMPUTE_PLAN). Sweep scripts: `scripts/box/{screen,validate,diag,tier1}.sh`.
+> Bring-up (if terminated): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam:
 > **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
 >
 > **Box note:** `shield-data` had VaVAM weights but NO scenes (the handoff's "scenes on shield-data"
@@ -39,10 +39,13 @@ The headline the whole project was built to measure, done as a real sweep. **10 
 + Depth-Anything metric + SegFormer). Only the obstacle source differs — same policy, same driver, so
 this isolates perception. Data + figure: `results/tier1_degradation.{csv,png}`.
 
-| metric (10 scenes, n=5) | GT geometry | camera (surround+semantic) |
+| metric (10 scenes, **n=10**) | GT geometry | camera (surround+semantic) |
 |---|---|---|
-| **at-fault collision rate** | **0.06** | **0.24** (≈4×) |
-| progress | 0.62 | 0.60 (≈ equal) |
+| **at-fault collision rate** | **0.02** | **0.23** (~10×) |
+| progress | 0.62 | 0.59 (≈ equal) |
+
+(n=5 first pass was 0.06 → 0.24 / ~4×; at n=10 the GT baseline tightened toward zero, widening the
+gap. n=5 record: `results/tier1_degradation_n5.csv`.)
 
 **The degradation is in SAFETY, not mobility.** Learned perception ~quadruples at-fault collisions at
 essentially unchanged progress — "provably no collisions" becomes "no collisions *if perception was
