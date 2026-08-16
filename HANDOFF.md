@@ -3,17 +3,17 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> ## ✅ RESULT COMPLETE at n=10 — the box may still be BILLING; TERMINATE it ⚠
-> As of 2026-08-16 the full result is **done and committed** (Tier 0 + the n=10 Tier 1 degradation
-> ladder + mechanism + hero video + write-up). The n=10 sweep was the **last thing that needed the
-> GPU**, so unless you're starting **Tier 2 (shielded-RL)**, the Lambda **1×A100-40GB** box should be
-> **TERMINATED** (Lambda console — no auto-stop; the user was asked to do this at session end).
-> `shield-data` persists, so nothing is lost.
-> - **If the box is still up:** `ssh ubuntu@150.136.71.147` (key `~/.ssh/id_ed25519`; IP ephemeral —
->   check the console). State: `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on
+> ## ✅ Tier 0 + Tier 1 DONE (n=10) — box KEPT UP for Tier 2 (shielded-RL is NEXT)
+> As of 2026-08-16 the full result is **done, committed, and pushed** (Tier 0 + the n=10 Tier 1
+> degradation ladder + mechanism + hero video + write-up). **The box is left running on purpose** —
+> the user has ~$7.5k Lambda credits and is starting **Tier 2 (shielded-RL)** next, so **connect to
+> the existing box, don't terminate or re-bring-up.** (It burns ~$30–45/day idle — fine against the
+> credits, but don't leave it idle for weeks.) **▶ Tier 2 kickoff prompt: [`docs/TIER2_KICKOFF.md`](docs/TIER2_KICKOFF.md)** — read it first.
+> - **Connect:** `ssh ubuntu@150.136.71.147` (key `~/.ssh/id_ed25519`; IP ephemeral — check the
+>   Lambda console). State: `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on
 >   `phase3-container-wiring`, **102 tests pass**, VaVAM-S + curated scenes downloaded, the
->   `SHIELD_SIDE_CORRIDOR` fix rsynced (off by default). A100 driver 580, CUDA 12.8.
-> - **Fresh box:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
+>   `SHIELD_SIDE_CORRIDOR` fix rsynced (off by default). A100 driver 580, CUDA 12.8. `shield-data` persists.
+> - **If the box got terminated anyway:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
 > - **HF token:** NOT stored here (public repo). Re-supply `HF_TOKEN` inline for scene downloads —
 >   never write it to the repo/FS.
 >
