@@ -5,7 +5,8 @@ driver plugin for [NVIDIA AlpaSim](https://github.com/NVlabs/alpasim), NVIDIA's 
 closed-loop AV validation harness (the companion sim to **Alpamayo**), and use it to filter a
 learned camera policy. The question this repo exists to answer: does a shield that provably
 holds 0 collisions on real KITTI drives still earn its keep when dropped into a harder,
-photorealistic closed-loop environment it was never tuned on?
+photorealistic closed-loop environment it was never tuned on — and how much of its guarantee
+survives when its obstacle field comes from *learned perception* instead of ground truth?
 
 **Status: working, with a result.** The shield runs as a *decorator* over AlpaSim's VaVAM
 camera driver: VaVAM proposes a trajectory, the shield certifies it against ground-truth scene
@@ -46,8 +47,42 @@ Honest caveats, stated plainly (details in `HANDOFF.md`):
   single front camera perceives only a forward cone: on one scene the ego collided with a
   *laterally-adjacent* car it never saw (verified in the BEV debug dump — the nearest close
   obstacle was to the side/rear in ~90% of cycles and the camera perceived none of them). So a
-  camera-perception shield only guards what it can see. **Surround cameras are the next step** —
-  the plan is in [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
+  camera-perception shield only guards what it can see. That front-only "barely degrades" result
+  was on the easy sample scenes; **surround cameras and a full degradation sweep now exist** — and
+  on harder, denser scenes the picture is sharper. See *Perception degradation* next.
+
+## Perception degradation — the certificate is only as good as what the camera sees
+
+The shield's guarantee is computed against an obstacle field. Feed it ground-truth geometry and it
+holds; feed it a *learned* obstacle field and the guarantee is only as sound as the perception under
+it — the exact failure a safety shield exists to catch. This repo now measures that degradation
+head-on. A real 5-camera **ftheta surround** rig (per-scene fisheye calibration read from the USDZ)
+feeds monocular metric depth (Depth-Anything) and a **SegFormer** semantic filter into the same
+shield; SegFormer was first verified to label vehicles/pedestrians correctly on the distorted
+fisheye frames. Then, across **10 curated NuRec scenes × n = 5 rollouts**, the obstacle field was
+swapped between ground-truth actors and camera perception with everything else held fixed:
+
+| 10 scenes, n = 5 | GT geometry | learned camera perception |
+| --- | --- | --- |
+| **at-fault collision rate** | **0.06** | **0.24** (~4×) |
+| route progress | 0.62 | 0.60 (≈ equal) |
+
+![Per-scene degradation](results/tier1_degradation.png)
+
+**Learned camera perception roughly quadruples the shield's at-fault collision rate at essentially
+unchanged progress — the degradation is in *safety*, not mobility.** The mechanism is concrete: the
+camera **under-perceives in dense traffic**. On the sharpest scene the GT field carries ~250
+obstacles per cycle and the shield never crashes; the camera field carries ~40, misses the
+collision-relevant one, and crashes in 4 of 5 rollouts. On another, the obstacle *counts* match but
+the camera *mis-locates* the relevant vehicle. "Provably no collisions" becomes "no collisions *if
+perception was right*," and this measures how much it isn't.
+
+Honest caveats: n = 5 with high run-to-run variance (VaVAM is stochastic), so the 4× is directional —
+n ≥ 10 would tighten the error bars. The GT baseline uses AlpaSim's near-clean `rig_est` ego frame
+(localization noise is identity by default), so this isolates *perception*, not localization. The
+middle rungs of the perception ladder — front-camera-only, and surround without the semantic filter —
+fill in the gradient between these two endpoints. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam
+detail in [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
 
 ## The gap, and how it was closed
 
