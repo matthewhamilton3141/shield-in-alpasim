@@ -87,6 +87,11 @@ class ShieldNavEnv:
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     shield: bool = True
     seed: int | None = None
+    # Optional bank of pre-built obstacle layouts, each an (N, 3) array of (x, y, r) discs. When
+    # given, `reset()` samples a layout from it instead of generating fresh random discs — the
+    # drop-in seam for **real NuRec-scene fields** (SceneObstacleSource sampled at a set of ego
+    # poses) so the scaled run can train on the eval distribution. None -> procedural (the probe).
+    layouts: list[np.ndarray] | None = None
 
     def __post_init__(self) -> None:
         self._rng = np.random.default_rng(self.seed)
@@ -134,10 +139,17 @@ class ShieldNavEnv:
     # --- episode lifecycle --------------------------------------------------------------
     def reset(self) -> np.ndarray:
         c = self.cfg
-        xs = self._rng.uniform(*c.obstacle_x_range, size=c.n_obstacles)
-        ys = self._rng.uniform(*c.obstacle_y_range, size=c.n_obstacles)
-        rs = self._rng.uniform(*c.obstacle_radius_range, size=c.n_obstacles)
-        self._obstacles = CircleField(np.column_stack([xs, ys, rs]))
+        if self.layouts:
+            # Sample a pre-built layout (real-scene drop-in seam). We still assert the start is
+            # certifiable below, so a layout with a disc inside the stopping envelope is rejected
+            # loudly rather than silently making the guarantee vacuous.
+            layout = self.layouts[int(self._rng.integers(len(self.layouts)))]
+            self._obstacles = CircleField(np.asarray(layout, float).reshape(-1, 3))
+        else:
+            xs = self._rng.uniform(*c.obstacle_x_range, size=c.n_obstacles)
+            ys = self._rng.uniform(*c.obstacle_y_range, size=c.n_obstacles)
+            rs = self._rng.uniform(*c.obstacle_radius_range, size=c.n_obstacles)
+            self._obstacles = CircleField(np.column_stack([xs, ys, rs]))
         self._state = VehicleState(x=0.0, y=0.0, yaw=0.0, v=c.start_speed, steer=0.0)
         self._t = 0
         # Sanity: the start must be shield-certifiable, or the "provably no collisions" claim
