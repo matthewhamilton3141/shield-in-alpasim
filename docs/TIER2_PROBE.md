@@ -80,18 +80,43 @@ Three things, all pointing the same way:
 - Tiny scale (700k steps, one seed/arm, a random-feature policy). This is a go/no-go probe, not the
   result. The scaled run below is where the numbers get error bars.
 
-## Verdict: **GO** — recommended scaled run
+## Verdict: **GO** — and the scaled run confirms it with statistics
 
-The mechanism works and is cheap. Proposed flagship, still well inside the Tier 2 budget:
+The probe earned the scaled run; it is now done (`scripts/rl_scaled.py`): a proper **MLP
+actor-critic trained with PPO** (GAE, clip, annealed entropy), **5 seeds per arm × 400k steps**,
+on a harder 6-obstacle corridor, mean ± std over seeds. Still CPU-only, ~$0.
 
-1. **Scale the surrogate run** — a real policy net (small MLP in torch), PPO, obstacle fields
-   *sampled from the 10 curated NuRec scenes* (GT actor geometry) so training distribution matches
-   the eval, ≥5 seeds/arm, shielded vs unshielded learning curves with error bars. Still CPU, still
-   ~$0 — this is the paper's learning-curve figure.
-2. **Evaluate the shield-trained policy in AlpaSim** closed-loop (a few dozen renders, ~$10–30) —
-   does a policy raised under the shield transfer to the photoreal sim, and how does it fare when
-   the shield's obstacle field comes from *learned camera perception* (the Tier 1 seam)? That
-   closes the loop between the two tiers.
+![scaled](../results/rl_scaled.png)
 
-Reproduce: `python3 scripts/rl_probe.py` (writes `results/rl_probe.{csv,png}` + the verdict).
-Tests: `python3 -m pytest -q` (110 pass, no GPU).
+| arm (5 seeds, PPO) | converged return | **training collisions / seed** | eval return | **eval collision rate** |
+| --- | --- | --- | --- | --- |
+| **shielded** | **11.2** | **0** | **11.0 ± 1.0** | **0.00** |
+| unshielded | 4.5 | **385** | 4.1 ± 1.4 | 0.11 |
+
+The seed-averaged bands barely overlap: **shielded exploration learns to ~2.5× the unshielded
+return**, with **tighter** variance, **zero collisions across all five seeds (2M shielded steps)**,
+and a final policy that is **crash-free at eval (0.00 vs 0.11)**. The unshielded arm not only racks
+up ~385 crashes/seed *while* learning, its converged policy is still unsafe (11% eval collisions)
+and lower-return. Shielding made learning safer, better, *and* lower-variance — the Tier 2 thesis,
+now with error bars.
+
+**Honest caveat:** absolute goal-completion is low on this deliberately hard task (~2% shielded)
+— the return separation is the progress-safely signal, not full route completion; more steps or a
+curriculum would raise completion. The comparison (safety + return, both with error bars) is the
+result, and it is decisive.
+
+### The one remaining, box-dependent step
+
+**Evaluate the shield-trained policy in AlpaSim** closed-loop (a few dozen renders, ~$10–30):
+does a policy raised under the shield transfer to the photoreal sim, and how does it fare when the
+shield's obstacle field comes from *learned camera perception* (the Tier 1 seam)? The `layouts`
+hook on `ShieldNavEnv` also lets the scaled run train on obstacle fields *sampled from the 10
+curated NuRec scenes* (GT actors via `SceneObstacleSource`) so the training distribution matches
+the eval — both need a GPU box (re-provision with `setup_box.sh`).
+
+Reproduce:
+```bash
+python3 scripts/rl_probe.py     # feasibility probe -> results/rl_probe.{csv,png}
+python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm -> results/rl_scaled.{csv,png}
+python3 -m pytest -q            # 110 tests, no GPU
+```
