@@ -1,0 +1,7 @@
+scene,side_corridor,at_fault,offroad,progress,progress_std,mean_obstacles,status0
+clipgt-065dcac9-ee67-4434-a835-c6b816c88e48,off,0.0,0.667,0.453,0.004,101.5,fail
+clipgt-065dcac9-ee67-4434-a835-c6b816c88e48,on2,0.0,0.667,0.461,0.015,92.4,pass
+clipgt-048b974e-1546-488a-b8f9-d32bff77f5aa,off,0.0,0.0,0.373,0.004,242.4,pass
+clipgt-048b974e-1546-488a-b8f9-d32bff77f5aa,on2,0.0,0.0,0.428,0.043,234.7,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,off,0.0,0.0,0.994,0.01,22.8,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,on2,0.0,0.0,0.889,0.106,17.6,pass

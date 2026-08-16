@@ -75,14 +75,24 @@ is **identity (clean) by default** (`policy.py:219`; enabling noise needs an ego
 wired in), which is *good* — the GT baseline is near-clean localization, so the degradation isolates
 perception.
 
-**Staged (local, NOT on the box): the finding-2 side-actor fix.** `forward_relevant_field` now takes
-an optional `side_corridor` half-width (env `SHIELD_SIDE_CORRIDOR`, off by default): it drops discs
-that are abeam/behind AND laterally beyond the corridor — the omnidirectional-`clearance` braking for
-side actors a forward-braking maneuver can't hit (the diagnostic saw the GT arm brake for 17 such).
-Gated + tunable + 3 unit tests (102 green). It's a heuristic (a hard evasive turn could still reach a
-dropped disc), so **A/B it on the box before defaulting on**: `SHIELD_SIDE_CORRIDOR=2.0` vs unset on
-the dense scenes (`048b974e`,`0245ff75`,`065dcac9`) — expect progress up, at-fault unchanged. Not yet
-rsynced to the box (kept the ladder sweep's comparison clean).
+**The finding-2 side-actor fix — implemented, A/B'd, and mostly a NEGATIVE result.**
+`forward_relevant_field` takes an optional `side_corridor` half-width (env `SHIELD_SIDE_CORRIDOR`,
+off by default): drops discs abeam/behind AND laterally beyond the corridor — the
+omnidirectional-`clearance` braking for side actors a forward-braking maneuver can't hit. Gated +
+tunable + 3 unit tests (102 green). **A/B on the box** (GT arm, `SHIELD_SIDE_CORRIDOR=2.0` vs off,
+n=3; `results/sidecorridor_ab.csv`):
+
+| scene | at-fault (off→on) | progress (off→on) | obstacles |
+|---|---|---|---|
+| 048b974e | 0.0→0.0 | 0.373→**0.428** | 242→235 |
+| 065dcac9 | 0.0→0.0 | 0.453→0.461 | 101→92 |
+| 026d6a39 (control) | 0.0→0.0 | 0.994→0.889* | 23→18 |
+
+**Safety-neutral (at-fault unchanged everywhere — no crashes reintroduced), but progress recovery is
+marginal** (+0.055 on the densest scene, negligible elsewhere; the control's −0.10 is within the n=3
+noise, std 0.11). At 2.0 m the corridor only drops ~10% of obstacles → **the dense-scene over-braking
+is mostly genuine *ahead/near* traffic, not far-abeam actors**, so the fix as tuned isn't a clear win.
+A tighter corridor might help but risks safety; needs tuning + n≥10. Kept gated/off by default.
 
 ---
 
