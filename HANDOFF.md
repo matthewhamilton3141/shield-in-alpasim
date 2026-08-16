@@ -15,18 +15,54 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 > - **HF token:** NOT stored here (public repo). The user must re-supply `HF_TOKEN` for scene
 >   downloads — pass it inline, never write it to the repo/FS.
 >
-> **▶ NEXT: Tier 1 (the degradation curve).** Tier 0 is DONE (see the section directly below):
-> the surround+semantic pipeline runs end-to-end and **SegFormer works on the NuRec fisheye**. Now
-> sweep the perception ladder (GT → +localization noise → front-cam → surround-gate →
-> surround-semantic) across ~30 scenes at n≥10 for the paper figure. Plan:
-> **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up (if you terminated and need a fresh
-> box): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam detail:
+> **▶ NEXT: tighten Tier 1 (n≥10) + write up.** Tier 0 DONE and **Tier 1 first pass DONE** (both
+> sections below): the headline is **learned camera perception degrades the shield's at-fault rate
+> ~4× (0.06→0.24) at ~equal progress**, mechanism = camera under-perceives/mislocates obstacles in
+> dense traffic (`results/tier1_degradation.{csv,png}`). It's n=5 with high variance — re-run at
+> **n≥10** to tighten the error bars, optionally add the middle rungs (+loc-noise, front-only) for
+> the full ladder, then write up. Sweep scripts: `scripts/box/{screen,validate,diag,tier1}.sh`. Plan:
+> **[`docs/COMPUTE_PLAN.md`](docs/COMPUTE_PLAN.md)**; bring-up (if terminated):
+> `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam:
 > **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
 >
 > **Box note:** `shield-data` had VaVAM weights but NO scenes (the handoff's "scenes on shield-data"
 > was stale) — scene `02eadd92` was re-downloaded to `~/alpasim/data/nre-artifacts` (local disk, not
 > the persistent NFS). For Tier 1, symlink `nre-artifacts` onto `shield-data` so the sweep's scenes
 > survive termination.
+
+---
+
+## ★★★★ TIER 1 FIRST PASS — learned perception degrades the guarantee ~4× (2026-08-16)
+
+The headline the whole project was built to measure, done as a real sweep. **10 curated NuRec scenes
+× n=5**, `shielded_vavam_surround`, obstacle field from **GT actors** vs **camera** (surround ftheta
++ Depth-Anything metric + SegFormer). Only the obstacle source differs — same policy, same driver, so
+this isolates perception. Data + figure: `results/tier1_degradation.{csv,png}`.
+
+| metric (10 scenes, n=5) | GT geometry | camera (surround+semantic) |
+|---|---|---|
+| **at-fault collision rate** | **0.06** | **0.24** (≈4×) |
+| progress | 0.62 | 0.60 (≈ equal) |
+
+**The degradation is in SAFETY, not mobility.** Learned perception ~quadruples at-fault collisions at
+essentially unchanged progress — "provably no collisions" becomes "no collisions *if perception was
+right*," and this measures how much it isn't. **Mechanism: camera under-perceives / mislocates the
+collision-relevant obstacle in dense traffic.** Smoking guns: `048b974e` (GT sees 250 obstacles/cyc →
+0 crashes; camera sees 41 → crashes 4/5), `05e74bef` (90→0 vs 35→0.2); `01d503d4` is mis-*location*
+(similar counts 78/81 but camera crashes 0.6). Camera introduces crashes on 4/10 scenes; GT on 1.
+
+**How we got here (the useful methodology):** a 20-scene **screen** (unshielded VaVAM, on-route =
+`offroad=0`) found drift is the exception (16/20 on-route), so we curated a clean set instead of
+building a path-anchor. A single-scene GT-vs-camera **diagnostic** (`065dcac9`) first showed
+camera≈GT and pinned that the *progress* cost is the shield's own dense-traffic conservatism (the
+handoff's finding-2: GT arm brakes for 17 side actors; camera arm avoids them), **not** perception —
+then the 10-scene breadth revealed the *safety* degradation the single scene hid (there the camera
+undercounted 84→13 but didn't miss the collision-relevant disc; elsewhere it does).
+
+**Honest caveats:** n=5, high variance (`at_fault_std` up to 0.55, so 0.6 = 3/5); the 4× is
+directional — **n≥10 wanted** for tight bars. Offroad confounds a few scenes (`065dcac9`,`054b5901`,
+`0499fb41` drift, orthogonal to the shield). Two rungs only (GT vs surround-semantic); the middle
+rungs (+loc-noise, front-only, surround-gate) would fill the full ladder.
 
 ---
 
