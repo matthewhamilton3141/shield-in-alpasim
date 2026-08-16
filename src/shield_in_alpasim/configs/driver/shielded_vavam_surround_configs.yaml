@@ -1,0 +1,109 @@
+# @package _global_
+# Global config for `driver=shielded_vavam_surround`: the shield wrapping VaVAM, perceiving from
+# the real 5-camera SURROUND rig (front-wide + cross-left/right + rear-left/right) instead of the
+# front camera alone.
+#
+# Two halves:
+#   1. The 5 surround cameras to render + advertise. Only `logical_id` is given — AlpaSim renders
+#      each from the scene's own per-clip calibration (`_register_scene_cameras` ->
+#      `parse_cameras_from_usdz`), the same source our perception loads (driver.py
+#      `_build_obstacle_source` -> `load_ftheta_cameras`). No `extra_cameras` block: it was a
+#      hardcoded pinhole approximation the renderer ignores, and it mis-posed the rear cameras
+#      (docs/MULTICAM_HANDOFF.md). This mirrors AlpaSim's own 6-cam preset, which also lists only
+#      logical_ids.
+#   2. The driver-container wiring (shield + VaVAM inner policy). VaVAM validates against its one
+#      front camera, so SHIELD_POLICY_CAMERAS hands it only that; the shield perceives from all 5.
+#
+# The real rig gives full 360deg coverage (the rear cameras point to the rear quarters, not straight
+# back), so no blind wedge. Restated in full because OmegaConf replaces lists on merge.
+
+# ---- (1) surround cameras (rendered from the scene's real per-clip calibration) ----
+runtime:
+  simulation_config:
+    force_gt_duration_us: 3_000_000
+    n_sim_steps: 100
+    n_rollouts: 1
+    control_timestep_us: 500_000
+    ego_mask_rig_config_id: null
+
+    cameras:
+      - logical_id: camera_cross_left_120fov
+        height: 1080
+        width: 1920
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - logical_id: camera_front_wide_120fov
+        height: 1080
+        width: 1920
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - logical_id: camera_cross_right_120fov
+        height: 1080
+        width: 1920
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - logical_id: camera_rear_left_70fov
+        height: 1080
+        width: 1920
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+      - logical_id: camera_rear_right_70fov
+        height: 1080
+        width: 1920
+        frame_interval_us: 500_000
+        shutter_duration_us: 30_000
+
+# ---- (2) driver-container wiring (shield + VaVAM inner policy, surround ftheta perception) ----
+services:
+  driver:
+    replicas_per_container: 1
+    volumes:
+      - "${defines.drivers}:/mnt/drivers"                 # holds /mnt/drivers/vavam/<ckpt,tokenizer>
+      - "${wizard.log_dir}:/mnt/output"
+      - "${repo-relative:'src'}:/repo/src"
+      - "${repo-relative:'plugins'}:/repo/plugins"
+      - "${defines.hf_cache}:/root/.cache/huggingface"
+      - "${scenes.scene_cache}:/mnt/nre-data"             # shield reads GT geometry + calib from the usdz
+      - "${oc.env:SHIELD_SRC,${oc.env:HOME}/shield-in-alpasim}:/mnt/shield"
+      - "${oc.env:KITTI_NAV_SRC,${oc.env:HOME}/kitti-nav/src}:/mnt/kitti-nav-src"
+    environments:
+      - "PYTHONPATH=/mnt/kitti-nav-src"
+      # Armed with the scene USDZ: the shield's GT field AND the surround ftheta calibration both
+      # come from it, so this must be set for surround perception (else it falls back to the
+      # hardcoded pinhole rig with rear-quarter blind wedges).
+      - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+      - "SHIELD_INNER_MODEL=vam"
+      # VaVAM validates against its single front camera; the shield perceives from all five.
+      - "SHIELD_POLICY_CAMERAS=${oc.env:SHIELD_POLICY_CAMERAS,camera_front_wide_120fov}"
+      - "SHIELD_REAR_FILTER=${oc.env:SHIELD_REAR_FILTER,1}"
+      - "SHIELD_PASSTHROUGH=${oc.env:SHIELD_PASSTHROUGH,1}"
+      - "SHIELD_OOD_GUARD=${oc.env:SHIELD_OOD_GUARD,1}"
+      # This config exists FOR surround perception, so default the source to camera (still
+      # overridable to gt for an A/B of the surround geometry against ground truth).
+      - "SHIELD_OBSTACLE_SOURCE=${oc.env:SHIELD_OBSTACLE_SOURCE,camera}"
+      - "SHIELD_DEPTH_MODEL=${oc.env:SHIELD_DEPTH_MODEL,depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf}"
+      # 5 cameras = 5x depth passes/cycle; SHIELD_DEPTH_BATCH=1 runs them as one batched call.
+      - "SHIELD_DEPTH_BATCH=${oc.env:SHIELD_DEPTH_BATCH,0}"
+      # Corridor gate: drop roadside static clutter, keep only obstacles in the driving corridor
+      # (default ON for surround — dense depth reconstructs the whole street). Host SHIELD_GATE=0
+      # disables it for an A/B; SHIELD_GATE_XMAX/_HALFWIDTH/_RANGE tune the corridor.
+      - "SHIELD_GATE=${oc.env:SHIELD_GATE,1}"
+      - "SHIELD_GATE_XMAX=${oc.env:SHIELD_GATE_XMAX,25.0}"
+      - "SHIELD_GATE_HALFWIDTH=${oc.env:SHIELD_GATE_HALFWIDTH,4.0}"
+      - "SHIELD_GATE_RANGE=${oc.env:SHIELD_GATE_RANGE,20.0}"
+      # Semantic filter: keep only vehicle/pedestrian pixels (the *better* clutter filter, makes the
+      # camera field comparable to the GT actor field). Off by default (adds a seg pass per camera);
+      # host SHIELD_SEMANTIC=1 enables it, SHIELD_SEG_MODEL overrides the model.
+      - "SHIELD_SEMANTIC=${oc.env:SHIELD_SEMANTIC,0}"
+      - "SHIELD_SEG_MODEL=${oc.env:SHIELD_SEG_MODEL,nvidia/segformer-b0-finetuned-cityscapes-1024-1024}"
+      - "SHIELD_DEBUG_DIR=${oc.env:SHIELD_DEBUG_DIR,}"
+      # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
+      # with the BEV). Empty = off (driver.py `_dump_camera_frames`).
+      - "SHIELD_DEBUG_CAMERAS=${oc.env:SHIELD_DEBUG_CAMERAS,}"
+    command:
+      - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"
+      - "uv run -m alpasim_driver.main"
+      - "--config-path=/mnt/output"
+      - "--config-name=driver-config.yaml"
+      - "host=0.0.0.0"
+      - "port={port}"

@@ -3,6 +3,174 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
+> ## ✅ Tier 0 + Tier 1 DONE (n=10) · ✅ Tier 2 probe = GO · ✅ Tier 2 scaled PPO DONE (2026-08-16)
+> Tier 0 + the n=10 Tier 1 degradation ladder are done/committed/pushed. **Tier 2 (safe RL via
+> shielding) is scoped, greenlit, and the scaled learning-curve figure is banked** — see
+> **[`docs/TIER2_PROBE.md`](docs/TIER2_PROBE.md)**. Key finding: **AlpaSim has NO RL interface** (gRPC
+> eval harness — no reward/reset/step; each step is a render + docker bring-up → training against it is
+> infeasible). The feasible path, now demonstrated: **train a low-dim policy in the kitti_nav numpy
+> surrogate *under the shield* (`safety_shield` as the per-step veto), then EVAL the learned policy in
+> AlpaSim.**
+> - **Probe** (`scripts/rl_probe.py`, numpy REINFORCE): shielded 7.4→17.7, **0 training collisions**, 30%
+>   goal; unshielded **654 collisions**, collapsed to do-nothing. GO.
+> - **Scaled** (`scripts/rl_scaled.py`, torch **MLP+PPO, 5 seeds/arm × 400k steps**, `results/rl_scaled.{png,csv}`):
+>   shielded converged return **11.2 vs 4.5**, **0 training collisions/seed vs ~385**, eval collision
+>   **0.00 vs 0.11**. Shielding → safer, higher-return, lower-variance learning, with error bars.
+>   **110 tests pass.**
+> - **A100 TERMINATED (2026-08-16):** all Tier 2 CPU work needs no GPU. User chose terminate (it's a
+>   Lambda console/API action — no Lambda key on the Mac). Re-provision with `setup_box.sh` ONLY for the
+>   one deferred box-dependent step ↓.
+> - **Only remaining Tier 2 step (needs a box, ~$10–30):** eval the shield-trained policy in AlpaSim
+>   closed-loop, incl. training on obstacle fields sampled from the 10 curated NuRec scenes via the new
+>   `ShieldNavEnv(layouts=...)` seam + the learned-camera obstacle field (Tier 1 seam). See
+>   `docs/TIER2_PROBE.md` §"box-dependent step".
+> - **Connect (if re-provisioned):** `ssh ubuntu@<IP>` (key `~/.ssh/id_ed25519`; IP ephemeral — Lambda
+>   console). `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on `phase3-container-wiring`.
+> - **If the box got terminated:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
+> - **HF token:** NOT stored here (public repo). Re-supply `HF_TOKEN` inline for scene downloads —
+>   never write it to the repo/FS.
+>
+> **▶ NEXT: PR to `main`, then decide on Tier 2.** Tier 0 + Tier 1 DONE **at n=10** (sections below):
+> **learned camera perception takes the shield's at-fault rate from ~0.02 (GT, essentially crash-free)
+> to ~0.23 — roughly an order of magnitude — at flat progress**, mechanism = camera
+> under-perceives/mislocates the *collision-relevant* obstacle in dense traffic (the shield tolerates
+> losing 60–86% of the field otherwise). Write-up: **[`docs/RESULTS.md`](docs/RESULTS.md)** + system
+> diagram + 3 figures. The result is shippable — **PR the branch to `main`**. The only big remaining
+> build is **Tier 2 shielded-RL** (COMPUTE_PLAN). Sweep scripts: `scripts/box/{screen,validate,diag,tier1}.sh`.
+> Bring-up (if terminated): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam:
+> **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
+>
+> **Box note:** `shield-data` had VaVAM weights but NO scenes (the handoff's "scenes on shield-data"
+> was stale) — scene `02eadd92` was re-downloaded to `~/alpasim/data/nre-artifacts` (local disk, not
+> the persistent NFS). For Tier 1, symlink `nre-artifacts` onto `shield-data` so the sweep's scenes
+> survive termination.
+
+---
+
+## ★★★★ TIER 1 FIRST PASS — learned perception degrades the guarantee ~4× (2026-08-16)
+
+The headline the whole project was built to measure, done as a real sweep. **10 curated NuRec scenes
+× n=5**, `shielded_vavam_surround`, obstacle field from **GT actors** vs **camera** (surround ftheta
++ Depth-Anything metric + SegFormer). Only the obstacle source differs — same policy, same driver, so
+this isolates perception. Data + figure: `results/tier1_degradation.{csv,png}`.
+
+| metric (10 scenes, **n=10**) | GT geometry | camera (surround+semantic) |
+|---|---|---|
+| **at-fault collision rate** | **0.02** | **0.23** (~10×) |
+| progress | 0.62 | 0.59 (≈ equal) |
+
+(n=5 first pass was 0.06 → 0.24 / ~4×; at n=10 the GT baseline tightened toward zero, widening the
+gap. n=5 record: `results/tier1_degradation_n5.csv`.)
+
+**The degradation is in SAFETY, not mobility.** Learned perception ~quadruples at-fault collisions at
+essentially unchanged progress — "provably no collisions" becomes "no collisions *if perception was
+right*," and this measures how much it isn't. **Mechanism: camera under-perceives / mislocates the
+collision-relevant obstacle in dense traffic.** Smoking guns: `048b974e` (GT sees 250 obstacles/cyc →
+0 crashes; camera sees 41 → crashes 4/5), `05e74bef` (90→0 vs 35→0.2); `01d503d4` is mis-*location*
+(similar counts 78/81 but camera crashes 0.6). Camera introduces crashes on 4/10 scenes; GT on 1.
+
+**How we got here (the useful methodology):** a 20-scene **screen** (unshielded VaVAM, on-route =
+`offroad=0`) found drift is the exception (16/20 on-route), so we curated a clean set instead of
+building a path-anchor. A single-scene GT-vs-camera **diagnostic** (`065dcac9`) first showed
+camera≈GT and pinned that the *progress* cost is the shield's own dense-traffic conservatism (the
+handoff's finding-2: GT arm brakes for 17 side actors; camera arm avoids them), **not** perception —
+then the 10-scene breadth revealed the *safety* degradation the single scene hid (there the camera
+undercounted 84→13 but didn't miss the collision-relevant disc; elsewhere it does).
+
+**Full ladder now measured** (`results/tier1_ladder.{png,csv}`, `scripts/make_ladder_figure.py`):
+GT `0.06` → front-mono `0.20` → surround-gated `0.34` → surround-semantic `0.24` at-fault. **Every
+learned rung is 3–6× worse than GT, and it is NOT monotonic** — surround-gated is *worst* (its side
+cameras feed abeam actors that trip the finding-2 over-braking → progress dip to 0.54; the gate still
+under-perceives the collision-relevant obstacle), and the semantic filter *helps* (0.34→0.24). Front
+has highest progress (0.70; a forward cone can't over-brake for side actors). Lesson: more coverage
+isn't automatically safer under a shield tuned for a narrower domain. (Front rung is ungated by
+config — texture, not a controlled rung; the clean contrast stays GT vs surround-semantic.)
+
+**Honest caveats:** n=5, high variance (`at_fault_std` up to 0.55, so 0.6 = 3/5); directional —
+**n≥10 wanted** for tight bars. Offroad confounds a few scenes (`065dcac9`,`054b5901`,`0499fb41`
+drift, orthogonal to the shield). The "+loc-noise" rung isn't a simple toggle — AlpaSim's ego frame
+is **identity (clean) by default** (`policy.py:219`; enabling noise needs an egomotion noise model
+wired in), which is *good* — the GT baseline is near-clean localization, so the degradation isolates
+perception.
+
+**The finding-2 side-actor fix — implemented, A/B'd, and mostly a NEGATIVE result.**
+`forward_relevant_field` takes an optional `side_corridor` half-width (env `SHIELD_SIDE_CORRIDOR`,
+off by default): drops discs abeam/behind AND laterally beyond the corridor — the
+omnidirectional-`clearance` braking for side actors a forward-braking maneuver can't hit. Gated +
+tunable + 3 unit tests (102 green). **A/B on the box** (GT arm, `SHIELD_SIDE_CORRIDOR=2.0` vs off,
+n=3; `results/sidecorridor_ab.csv`):
+
+| scene | at-fault (off→on) | progress (off→on) | obstacles |
+|---|---|---|---|
+| 048b974e | 0.0→0.0 | 0.373→**0.428** | 242→235 |
+| 065dcac9 | 0.0→0.0 | 0.453→0.461 | 101→92 |
+| 026d6a39 (control) | 0.0→0.0 | 0.994→0.889* | 23→18 |
+
+**Safety-neutral (at-fault unchanged everywhere — no crashes reintroduced), but progress recovery is
+marginal** (+0.055 on the densest scene, negligible elsewhere; the control's −0.10 is within the n=3
+noise, std 0.11). At 2.0 m the corridor only drops ~10% of obstacles → **the dense-scene over-braking
+is mostly genuine *ahead/near* traffic, not far-abeam actors**, so the fix as tuned isn't a clear win.
+A tighter corridor might help but risks safety; needs tuning + n≥10. Kept gated/off by default.
+
+---
+
+## ★★★ TIER 0 DONE — surround+semantic runs, and SegFormer WORKS on NuRec fisheye (2026-08-15)
+
+First real result on the Lambda A100. Downloaded scene `02eadd92` (gated NuRec, 1.7 G) and ran
+`driver=shielded_vavam_surround` armed, `SHIELD_SEMANTIC=1 SHIELD_DEPTH_BATCH=1`, with
+`SHIELD_DEBUG_DIR` + `SHIELD_DEBUG_CAMERAS` dumping per-cycle BEV npz and raw fisheye JPEGs.
+
+- **A real bug, found + fixed.** `ShieldedDriver._build_obstacle_source` was a `@staticmethod` but
+  called `cls._corridor_gate_from_env()` / `cls._semantic_masker_from_env()` → `NameError: cls`,
+  crashing the driver at startup on the **camera** path. This was the never-run path (the `gt`
+  default returns early, so the 98-test suite never hit it; the Brev GPU died before any camera
+  render). Fixed to a `@classmethod`; **added a regression test** that stubs the torch-backed depth
+  model + source ctor and drives the camera branch on the Mac → **99 tests pass**.
+- **End-to-end success (n=1).** Driver logs: `Semantic filter ON`, `Loaded ftheta calibration for 5
+  cameras`, `Obstacle field from SURROUND ftheta perception (5 cams ... gate=True, semantic=True)`,
+  live `n_obstacles` 22→7→0 as the road cleared, and **`collision_at_fault=0.0`** (the guarantee
+  held). The rollout went `offroad` (progress 0.66) but the shield was **passive** there
+  (`n_interventions: 0`, VaVAM's `accel=2.0` passed through) — so **VaVAM** drove off-route, not the
+  shield. Pure VaVAM variance; this is exactly what Tier 1's n≥10 averages out.
+- **The Tier 0 verdict: SegFormer works on the fisheye — no gate-only fallback needed.** Offline
+  probe (`scripts/seg_probe.py`) on the dumped frames: histograms dominated by road/building/
+  vegetation/sky (correct), with actor masks on the real vehicles — cross-left **bus 16.7%**,
+  rear-left **car 9.1% + truck 3.5% + person 0.5%**. One harmless quirk: the VTA bus sometimes reads
+  as "train", still a kept-actor class (id 16), so still retained as an obstacle. Visual overlays +
+  a surround **segmentation video** (`scripts/seg_video.py`, actor pixels magenta across the drive)
+  confirm the masks track the cars. Artifacts pulled to `out_tier0_result/` (gitignored).
+- **Ops:** first render of a fresh image races on the base-image build (4 services tag
+  `alpasim-base:0.134.0` in parallel → `image ... already exists`); just **re-run** once the image
+  is cached. Lambda sshd is flaky under render load — run everything in `tmux`, poll from the Mac.
+
+---
+
+## ★ STATE AT /CLEAR (2026-08-15) — surround perception done + cleaned; box deleted; Lambda incoming
+
+The camera arm is now a real **5-camera ftheta 360° surround** with clean perception. What shipped
+this session (all committed + pushed to `phase3-container-wiring`; 98 tests; details in
+`docs/MULTICAM_HANDOFF.md`):
+
+- **Surround perception, done right.** Real per-scene **ftheta (fisheye) calibration** loaded from
+  the USDZ (`parse_cameras_from_usdz`); the true rig covers 360° (rear cams point to the rear
+  quarters). Turned `02eadd92` from an at-fault **fail → PASS**. Two scene-variation robustness bugs
+  fixed (polynomial direction; scenes with no calibration → front-only fallback).
+- **Perception cleanup (pluggable filter seam).** `CorridorGate` (geometry) cut the field from
+  ~2,500 discs to the ~few-dozen in the driving corridor (**97% was roadside clutter**);
+  `SemanticDepthMask` (SegFormer, keep vehicle/pedestrian pixels) stacks in the same seam.
+  **⚠ Semantic is code-complete + unit-tested but NOT yet validated on real fisheye frames** — the
+  Brev GPU died before that render. First thing to check on Lambda.
+- **Portfolio visuals (light-themed, [[light-themed-visuals]]).** Shield's-eye BEV (gated), real-scene
+  front+rear camera video, and a clean **world-frame top-down** (`dump_scene_topdown.py` +
+  `scene_topdown_video.py`, no NuRec — vector map + actor boxes + ego trail).
+- **Infra:** Brev box **deleted** (billing stopped). Box-only artifacts rescued into the repo
+  (`data/download_vavam_assets.sh`, `results/*.csv`). New: **`scripts/setup_box.sh`** (one-command
+  Lambda bring-up) + **`docs/COMPUTE_PLAN.md`** ($7,500 → degradation curve + shielded-RL flagship).
+
+**Honest open items:** semantic-on-fisheye unvalidated; NuRec smears off-trajectory (caps how far
+camera perception is trustworthy); every result so far is n=1–3 (VaVAM is stochastic) — the whole
+point of Tier 1 is n≥10.
+
 ---
 
 ## ★★★★ FINAL HEADLINE SWEEP — all fixes on (2026-08-14)
@@ -139,6 +307,78 @@ of runs — `docker container prune -f && docker network prune -f` between batch
 **Next:** the clean headline result — a proper sweep (`n_rollouts=3–5`, ~8–10 scenes) of
 **unshielded vs shielded (passthrough+rear-filter on)** for the at-fault-collision rate and
 mean progress, now that the shielded arm drives properly. That table is the paper figure.
+
+---
+
+## ★★★★★ DEGRADATION SWEEP — learned perception ≈ ground truth (2026-08-14)
+
+The headline of the perception arm. 8 scenes × 3 rollouts, both shielded, obstacle field from
+**ground-truth geometry** vs **camera monocular metric depth** (`shield_ab.sh SHIELD_OBSTACLE_SOURCE`,
+`AB_VALUES="gt camera"`). **at-fault** = mean at-fault rate; **prog** = mean progress.
+
+| scene | gt at-fault | cam at-fault | gt prog | cam prog |
+|---|---|---|---|---|
+| 01d503d4 | 0.00 | 0.00 | 1.00 | 1.00 |
+| 023b7fcc | 0.00 | 0.00 | 0.97 | 1.00 |
+| 0245ff75 | 0.33 | 0.00 | 0.41 | 0.46 |
+| 026d6a39 | 0.00 | 0.00 | 0.88 | 0.92 |
+| 02e075b9 | 0.00 | 0.00 | 1.00 | 1.00 |
+| 02eadd92 | 0.33 | 0.00 | 0.81 | 0.96 |
+| 032b6f21 | 0.00 | 0.00 | 0.87 | **0.59** |
+| 04394343 | 0.00 | 0.00 | 0.49 | **0.38** |
+| **mean** | **0.083** | **0.000** | **0.80** | **0.79** |
+
+**The certificate barely degrades under learned perception.** Swapping perfect geometry for
+monocular metric depth (Depth Anything V2 Metric Outdoor) leaves at-fault collisions **0.083 → 0.0**
+and progress **0.80 → 0.79** — essentially no change, the *opposite* of the feared big
+degradation. That's the result: with a good modern metric-depth model, the hard shield's guarantee
+holds up on these scenes about as well as with ground truth.
+
+**Read it honestly:**
+- **This is within VaVAM noise.** n=3 and the policy is stochastic, so the per-scene deltas
+  (camera "better" on 0245ff75/02eadd92, worse on 032b6f21/04394343) are mostly noise, not signal.
+  The safe claim is *no systematic degradation observed*, not *camera beats GT*.
+- **Where camera does lose, it loses progress, not safety** — 032b6f21 (0.87→0.59) and 04394343
+  (0.49→0.38): mono depth produces phantom/near obstacles → extra braking → less progress, never
+  a collision. The failure direction is conservative, which is the right direction for a shield.
+- **Not adversarial enough to break it.** These are daytime sample scenes; the degradation the
+  method is meant to expose (miss a distant lead car → collision) needs harder cases: night, rain,
+  glare, fast highway lead vehicles. And n≥10 to pull signal out of VaVAM's variance.
+
+**So the full result now exists end-to-end:** a hard safety shield over a learned camera policy,
+with a **camera-derived** obstacle field, that reduces/holds at-fault collisions at ~no progress
+cost — and a first measurement that a modern metric-depth front-end does not meaningfully erode
+the guarantee on these scenes. Raw rows: `~/SHIELD_OBSTACLE_SOURCE_ab_results.csv`.
+
+---
+
+## ★ CAMERA-PERCEPTION ARM RUNS — the shield brakes for what the camera sees (2026-08-14)
+
+The learned-perception arm is wired and **validated end-to-end on the box**. `SHIELD_OBSTACLE_SOURCE=camera`
+swaps the ground-truth obstacle field for one built from the front camera: `depth.py`'s
+`HFDepthModel` (Depth Anything V2 Metric Outdoor, metres) → `obstacle_source.py`'s
+back-project → rig frame → height-band → BEV occupancy → discs → the same shield.
+
+Two interface bugs the first runs caught (both fixed, both were exactly the "verify on the box"
+flags): (1) the servicer sends **plain `(timestamp, image)` tuples**, not `CameraFrame` objects;
+(2) AlpaSim's `rig_to_camera` stores the **camera's pose in the rig** (`p_rig = R p_cam + t`),
+not the inverse — the first run put obstacles *behind* the ego (`nearest x=-2.2`).
+
+After the fix, scene 01d503d4, camera arm: depth median ~33 m (metric ✓), obstacles land **ahead**
+(`nearest x≈8–28`), and the result is **at_fault=0, offroad=0, progress=1.00, PASS** — matching the
+ground-truth arm on this scene (zero degradation here). transformers/torch are already in the
+image; the metric checkpoint downloads from HF (public) into the mounted cache.
+
+**This is the arm the whole project pointed at: a hard shield over a learned camera policy, its
+obstacle field also from the camera.** Toggles: `SHIELD_OBSTACLE_SOURCE=gt|camera`,
+`SHIELD_DEPTH_MODEL=<hf id>`.
+
+**Next — the degradation experiment (the headline the perception arm exists for):** sweep
+`SHIELD_OBSTACLE_SOURCE=camera` vs `gt` across the 8 scenes (`scene_sweep.sh` already runs GT;
+add a camera arm or an `shield_ab.sh SHIELD_OBSTACLE_SOURCE` run). The delta in at-fault rate is
+the number: *how much does the certificate degrade when perception is learned, not perfect?* One
+clean scene ≠ a result — mono depth is noisy at range, so expect the gap to open on scenes with
+distant lead vehicles.
 
 ---
 

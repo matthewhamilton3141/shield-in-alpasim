@@ -72,6 +72,13 @@ services:
       # Defer to VaVAM above the shield's modelled max_speed (default on); host
       # SHIELD_OOD_GUARD=0 shields anyway (driver.py `_out_of_domain`).
       - "SHIELD_OOD_GUARD=${oc.env:SHIELD_OOD_GUARD,1}"
+      # Obstacle field source: gt (ground-truth geometry, default) or camera (learned metric
+      # depth over the front camera — the degradation experiment). driver.py `_build_obstacle_source`.
+      - "SHIELD_OBSTACLE_SOURCE=${oc.env:SHIELD_OBSTACLE_SOURCE,gt}"
+      - "SHIELD_DEPTH_MODEL=${oc.env:SHIELD_DEPTH_MODEL,depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf}"
+      # Optional: dump per-cycle perceived-vs-true discs to a container path under /mnt/output
+      # (the log_dir mount) for the BEV video. Empty = off (driver.py `_dump_debug`).
+      - "SHIELD_DEBUG_DIR=${oc.env:SHIELD_DEBUG_DIR,}"
     command:
       # Only the shield needs registering; `vam` is already baked into the image.
       - "uv pip install --python /repo/.venv/bin/python -e /mnt/shield --no-deps --no-build-isolation &&"

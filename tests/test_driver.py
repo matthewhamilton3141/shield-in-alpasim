@@ -69,6 +69,47 @@ def test_forward_relevant_field_is_a_noop_when_nothing_is_behind():
     assert forward_relevant_field(f, VehicleConfig()) is f  # same object, no copy
 
 
+def test_side_corridor_drops_abeam_actors_but_keeps_ahead_and_in_corridor():
+    # finding-2: with a lateral corridor set, discs that are abeam/behind AND laterally outside it
+    # are un-hittable by a forward-braking maneuver and get dropped; anything ahead of the front
+    # bumper (path may steer to it) or within the corridor (a merging car) stays.
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    cfg = VehicleConfig()  # rear cut -1.27 m ; front_overhang (front bumper) = 4.77 - 0.97 = 3.80 m
+    circles = np.array([
+        [0.0, 4.0, 1.0],    # abeam, |y|-r=3.0 > 2.0, not ahead       -> DROP (the finding-2 case)
+        [10.0, 4.0, 1.0],   # ahead-lateral, x-r=9.0 >= 3.80          -> keep (path may steer to it)
+        [0.0, 1.5, 0.5],    # abeam, |y|-r=1.0 <= 2.0 (in corridor)   -> keep
+        [-1.0, 3.0, 1.0],   # beside-behind, |y|-r=2.0 <= 2.0 (edge)  -> keep (merging car matters)
+        [15.0, 0.0, 1.0],   # dead ahead                              -> keep
+        [-5.0, 0.0, 1.0],   # well behind (rear cut)                  -> drop
+    ])
+    kept = forward_relevant_field(CircleField(circles), cfg, side_corridor=2.0).circles
+    xy = sorted((round(x, 1), round(y, 1)) for x, y in kept[:, :2])
+    assert xy == [(-1.0, 3.0), (0.0, 1.5), (10.0, 4.0), (15.0, 0.0)]  # abeam-far + rear gone
+
+
+def test_side_corridor_none_is_the_rear_only_behavior():
+    # Default (side_corridor=None) must not touch abeam discs -> identical to the rear-only filter.
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    cfg = VehicleConfig()
+    circles = np.array([[0.0, 4.0, 1.0], [15.0, 0.0, 1.0]])  # an abeam-far disc + one ahead
+    kept = forward_relevant_field(CircleField(circles), cfg).circles  # side_corridor defaults None
+    assert sorted(kept[:, 1].tolist()) == [0.0, 4.0]  # abeam disc kept when the lateral cut is off
+
+
+def test_side_corridor_flag_is_honored_and_reads_env(monkeypatch):
+    assert _driver()._side_corridor is None                 # unset -> off
+    assert _driver(side_corridor=2.5)._side_corridor == 2.5  # explicit arg wins
+    monkeypatch.setenv("SHIELD_SIDE_CORRIDOR", "1.8")
+    assert _driver()._side_corridor == 1.8                   # env parsed to float
+
+
 def test_rear_filter_flag_is_honored():
     assert _driver(rear_filter=False)._rear_filter is False
     assert _driver(rear_filter=True)._rear_filter is True
@@ -126,6 +167,130 @@ def test_rollout_honors_a_horizon_override():
     assert d._rollout(initial_speed=5.0, horizon_steps=25).shape == (25, 2)
 
 
+# --- surround: advertise all cameras for perception, hand the policy only its own ---
+
+SURROUND = ["camera_cross_left_120fov", "camera_front_wide_120fov",
+            "camera_cross_right_120fov", "camera_rear_left_70fov"]
+
+
+def test_policy_cameras_default_to_all_advertised():
+    # Single-camera / no split: the policy sees every advertised camera, unchanged behaviour.
+    assert _driver().policy_camera_ids == CAMERAS
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2, horizon_steps=6)
+    assert d.policy_camera_ids == SURROUND
+
+
+def test_resolve_policy_cameras_from_env(monkeypatch):
+    monkeypatch.setenv("SHIELD_POLICY_CAMERAS", "camera_front_wide_120fov")
+    assert ShieldedDriver._resolve_policy_cameras(SURROUND) == ["camera_front_wide_120fov"]
+    # Unset -> everything advertised.
+    monkeypatch.delenv("SHIELD_POLICY_CAMERAS", raising=False)
+    assert ShieldedDriver._resolve_policy_cameras(SURROUND) == SURROUND
+
+
+def test_resolve_policy_cameras_rejects_unadvertised(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("SHIELD_POLICY_CAMERAS", "camera_front_wide_120fov,camera_not_rendered")
+    with pytest.raises(ValueError):
+        ShieldedDriver._resolve_policy_cameras(SURROUND)
+
+
+class _FakeInput:
+    """Stand-in for AlpaSim's PredictionInput: just carries a camera_images dict."""
+
+    def __init__(self, camera_images):
+        self.camera_images = camera_images
+
+
+def test_policy_input_narrows_cameras_to_the_inner_policy():
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2,
+                       horizon_steps=6, policy_camera_ids=["camera_front_wide_120fov"])
+    pi = _FakeInput({c: [(0, np.zeros((2, 2)))] for c in SURROUND})
+    narrowed = d._policy_input(pi)
+    assert set(narrowed.camera_images) == {"camera_front_wide_120fov"}  # only the policy's cam
+    assert set(pi.camera_images) == set(SURROUND)                        # original untouched
+
+
+def test_policy_input_is_identity_when_policy_uses_all_cameras():
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2, horizon_steps=6)
+    pi = _FakeInput({c: [] for c in SURROUND})
+    assert d._policy_input(pi) is pi  # no copy when there's nothing to filter
+
+
+def test_with_camera_images_copies_without_mutating():
+    from shield_in_alpasim.driver import _with_camera_images
+
+    pi = _FakeInput({"a": [1], "b": [2]})
+    clone = _with_camera_images(pi, {"a": [1]})
+    assert clone is not pi
+    assert set(clone.camera_images) == {"a"}
+    assert set(pi.camera_images) == {"a", "b"}  # original dict untouched
+
+
+def test_with_camera_images_uses_replace_on_a_frozen_dataclass():
+    # AlpaSim's PredictionInput is a frozen dataclass, so copy+setattr would raise; the
+    # dataclasses.replace branch must fire and preserve the other fields. This is the path that
+    # actually runs on the box (the plain-object test above only covers test fakes).
+    import dataclasses
+
+    from shield_in_alpasim.driver import _with_camera_images
+
+    @dataclasses.dataclass(frozen=True)
+    class FrozenInput:
+        camera_images: dict
+        speed: float
+
+    pi = FrozenInput({"a": [1], "b": [2]}, speed=7.5)
+    clone = _with_camera_images(pi, {"a": [1]})
+    assert clone is not pi
+    assert set(clone.camera_images) == {"a"}
+    assert clone.speed == 7.5                       # untouched sibling field survives
+    assert set(pi.camera_images) == {"a", "b"}      # original still intact (frozen, unmutated)
+
+
+def test_policy_input_narrows_a_frozen_prediction_input():
+    # End to end through _policy_input with a frozen dataclass standing in for PredictionInput.
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class FrozenInput:
+        camera_images: dict
+        speed: float
+
+    d = ShieldedDriver(cfg=VehicleConfig(), camera_ids=SURROUND, output_frequency_hz=2,
+                       horizon_steps=6, policy_camera_ids=["camera_front_wide_120fov"])
+    pi = FrozenInput({c: [(0, np.zeros((2, 2)))] for c in SURROUND}, speed=3.0)
+    narrowed = d._policy_input(pi)
+    assert set(narrowed.camera_images) == {"camera_front_wide_120fov"}
+    assert narrowed.speed == 3.0
+
+
+def test_surround_config_renders_and_advertises_the_same_cameras():
+    # The surround config renders a set of cameras and advertises the same set to the driver.
+    # Calibration is NOT in the config anymore — the renderer and our perception both read it from
+    # the scene USDZ (parse_cameras_from_usdz), like AlpaSim's own 6-cam preset — so we only check
+    # the rendered/advertised sets agree and are the real 5-camera 360 rig.
+    import pathlib
+
+    import yaml
+
+    cfg_dir = pathlib.Path(__file__).resolve().parent.parent / \
+        "src/shield_in_alpasim/configs/driver"
+    glob = yaml.safe_load((cfg_dir / "shielded_vavam_surround_configs.yaml").read_text())
+    drv = yaml.safe_load((cfg_dir / "shielded_vavam_surround.yaml").read_text())
+
+    rendered = {c["logical_id"] for c in glob["runtime"]["simulation_config"]["cameras"]}
+    advertised = set(drv["inference"]["use_cameras"])
+    expected = {"camera_front_wide_120fov", "camera_cross_left_120fov",
+                "camera_cross_right_120fov", "camera_rear_left_70fov", "camera_rear_right_70fov"}
+
+    assert rendered == advertised == expected
+    # No hardcoded extra_cameras — calibration comes from the USDZ (the whole point of the fix).
+    assert "extra_cameras" not in glob["runtime"]
+    assert "camera_front_wide_120fov" in advertised  # VaVAM's policy camera is advertised
+
+
 def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     driver = ShieldedDriver.from_config(
         model_cfg=None, device="cpu", camera_ids=CAMERAS, context_length=None, output_frequency_hz=4
@@ -133,6 +298,37 @@ def test_from_config_keeps_the_cameras_and_frequency_alpasim_asked_for():
     assert driver.camera_ids == CAMERAS
     assert driver.output_frequency_hz == 4
     assert driver.context_length == 1  # None in config -> the model's own default
+
+
+def test_build_obstacle_source_camera_path_resolves_sibling_helpers(monkeypatch):
+    """Regression: `_build_obstacle_source` must reach its `_corridor_gate_from_env` /
+    `_semantic_masker_from_env` siblings. As a @staticmethod it called them via `cls`, which is
+    unbound there -> NameError, crashing the driver at startup on the camera-perception path. The
+    gt default returns early, so the torch-free suite never exercised this branch; only a box render
+    did (and it died before a single cycle). Here we stub the torch-backed depth model + source ctor
+    so the pure-Python wiring runs on the Mac and the classmethod fix stays covered."""
+    import shield_in_alpasim.depth as depth_mod
+    import shield_in_alpasim.obstacle_source as osrc
+    from shield_in_alpasim.obstacle_source import CorridorGate
+
+    sentinel = object()
+    monkeypatch.setattr(depth_mod, "HFDepthModel", lambda *a, **k: sentinel)
+    captured = {}
+
+    def _fake_front_wide(depth_model, camera_id, **kw):
+        captured.update(camera_id=camera_id, **kw)
+        return sentinel
+
+    monkeypatch.setattr(osrc.CameraObstacleSource, "front_wide", _fake_front_wide)
+    monkeypatch.setenv("SHIELD_OBSTACLE_SOURCE", "camera")
+    monkeypatch.setenv("SHIELD_GATE", "1")          # exercises _corridor_gate_from_env via cls
+    monkeypatch.delenv("SHIELD_SEMANTIC", raising=False)  # semantic off -> no torch/segformer
+
+    src = ShieldedDriver._build_obstacle_source("cpu", CAMERAS)
+
+    assert src is sentinel
+    assert isinstance(captured["point_filter"], CorridorGate)  # the gate was built and threaded in
+    assert captured["depth_masker"] is None                    # semantic off
 
 
 # --- the decorator path: shielding an inner policy ---

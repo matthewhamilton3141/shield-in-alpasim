@@ -1,0 +1,11 @@
+scene,rear_filter,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,0,0.0,0.0,0.0,79.0,73.8,1.0,1.0,pass
+clipgt-01d503d4-449b-46fc-8d78-9085e70d3554,1,0.0,0.0,0.0,78.7,73.8,1.0,1.0,pass
+clipgt-023b7fcc-671c-40e3-9bd2-c66b0b073fbc,0,0.0,0.0,0.0,103.6,106.9,0.968,1.0,pass
+clipgt-023b7fcc-671c-40e3-9bd2-c66b0b073fbc,1,0.0,0.0,0.0,104.0,106.9,0.971,1.0,pass
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,0,1.0,0.0,0.0,69.5,169.8,0.409,0.0,fail
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,1,0.0,1.0,0.0,69.5,169.8,0.409,0.511,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,0,0.0,0.0,0.0,45.1,107.5,0.41,0.513,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,1,0.0,0.0,0.0,45.1,107.5,0.408,0.51,pass
+clipgt-02e075b9-fd24-426b-971b-7cfcb2074cc9,0,0.0,0.0,0.0,169.2,162.5,1.0,1.0,pass
+clipgt-02e075b9-fd24-426b-971b-7cfcb2074cc9,1,0.0,0.0,0.0,169.3,162.5,1.0,1.0,pass

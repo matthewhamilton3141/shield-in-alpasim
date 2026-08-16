@@ -2,123 +2,208 @@
 
 Wrap [kitti-nav](https://github.com/matthewhamilton3141/kitti-nav)'s hard safety shield as a
 driver plugin for [NVIDIA AlpaSim](https://github.com/NVlabs/alpasim), NVIDIA's open-source
-closed-loop AV validation harness (the companion sim to **Alpamayo**). The question this repo
-exists to answer: does a shield that provably holds 0 collisions on real KITTI drives still hold
-when it's dropped into a harder, photorealistic closed-loop environment it was never tuned on?
+closed-loop AV validation harness (the companion sim to **Alpamayo**), and use it to filter a
+learned camera policy. The question this repo exists to answer: does a shield that provably
+holds 0 collisions on real KITTI drives still earn its keep when dropped into a harder,
+photorealistic closed-loop environment it was never tuned on — and how much of its guarantee
+survives when its obstacle field comes from *learned perception* instead of ground truth?
 
-Status: **scaffold.** The plugin is registered and correct against AlpaSim's real driver
-interface (verified against the upstream source, not assumed), and it runs kitti-nav's
-actual shield — but against an empty obstacle field, so the shield never has anything to
-intervene on. Both open problems below are still open.
+**📄 Full write-up with figures: [`docs/RESULTS.md`](docs/RESULTS.md).**
 
-## Why a separate repo
+**Status: working, with a result.** The shield runs as a *decorator* over AlpaSim's VaVAM
+camera driver: VaVAM proposes a trajectory, the shield certifies it against ground-truth scene
+geometry, and only alters it when it must. Both problems the earlier scaffold flagged as open
+(below) are solved. See the numbers below and the full trail in
+[`HANDOFF.md`](HANDOFF.md).
 
-Same reason [kitti-nav](https://github.com/matthewhamilton3141/kitti-nav) split off from
-[gsplat-rt](https://github.com/matthewhamilton3141/gsplat-rt): different dependency stack
-(AlpaSim's own microservices, NuRec scene assets, a driver-plugin entry-point system) and a
-different story (closed-loop validation of a driving policy) from either the reconstruction
-work (gsplat-rt) or the real-sensor nav work (kitti-nav). This repo consumes kitti-nav's shield
-as a dependency rather than duplicating it.
+## The result
 
-## The actual gap (read before writing code here)
+8 scenes × 3 rollouts, VaVAM ± shield (all fixes on), on the NuRec sample set:
 
-AlpaSim's driver interface (`alpasim_driver.models.base.BaseTrajectoryModel`) is
-**vision-first**: a driver receives `PredictionInput` (multi-camera RGB frames, speed,
-acceleration, a coarse LEFT/STRAIGHT/RIGHT `DriveCommand`, plus `ego_pose_history`, an
-optional `route` of rig-frame waypoints, the `previous_plan`, and an `inference_seed`) and
-must return a `ModelPrediction` — **6-DoF waypoint poses** in the rig frame
-(`candidate_positions` `(K, T, 3)` + `candidate_rotations` `(K, T, 3, 3)`, K sampled
-candidates), not a low-level `(accel, steer)` command. Ground-plane planners build one with
-the `ModelPrediction.from_planar(trajectory_xy, headings)` classmethod, which is what this
-driver does. Nothing in that input carries geometry.
+| | unshielded VaVAM | shielded VaVAM |
+| --- | --- | --- |
+| mean at-fault collision rate | 0.125 | **0.042** (~3× fewer) |
+| outright failures | 2 | **0** |
+| mean route progress | 0.80 | **0.80** |
 
-kitti-nav's shield (`kitti_nav.vehicle.safety_shield` /
-`kitti_nav.dynamics.dynamic_safety_shield`) is the opposite shape: it filters a per-step
-`(accel_cmd, steer_cmd)` against an `ObstacleField` (circle obstacles or a lidar BEV occupancy
-grid) and returns a certified-safe `(accel, steer)`. It has no notion of camera pixels, and
-AlpaSim's `PredictionInput` has no notion of occupancy or lidar.
+**The hard shield cuts at-fault collisions ~3× and eliminates outright failures at no net
+progress cost** — the progress it spends braking on some scenes is offset by rescuing others
+(an offroad departure and an at-fault crash both became clean drives). Below: the same scene,
+same policy, unshielded (drives into an at-fault collision) vs shielded (vetoes and completes it).
 
-So this is not a drop-in adapter. Two real problems have to be solved here, not assumed away:
+Honest caveats, stated plainly (details in `HANDOFF.md`):
+- **VaVAM is stochastic** — the unshielded at-fault rate swung 0.21→0.125 between two sweeps
+  from seed variance alone, so `n = 3` numbers are *directional*; publication-grade wants n ≥ 10.
+- **One residual scene** where the shield still introduces an at-fault collision (non-highway,
+  uncharacterized) — the next thing to diagnose.
+- **A characterized failure mode, and its fix.** On a highway scene the shield *caused* a crash:
+  the ego was at 17 m/s but kitti-nav's kinematic model clamps to `max_speed = 15`, so its
+  stopping-distance reasoning was out of domain and it hard-braked into a collision VaVAM had
+  steered around. The **out-of-domain guard** now makes the shield *defer* to the policy above
+  its modelled speed rather than certify with a wrong model. A certificate is only as good as
+  the model it rests on — and this repo measures exactly that.
+- **Learned perception works — but it's front-camera-only, so the shield is blind to the sides.**
+  A second arm builds the obstacle field from the front camera itself (monocular metric depth →
+  BEV occupancy, `$SHIELD_OBSTACLE_SOURCE=camera`) instead of ground-truth geometry; across the
+  same 8 scenes it *barely degrades* the guarantee (at-fault `0.083 → 0.0`, progress ~flat). But a
+  single front camera perceives only a forward cone: on one scene the ego collided with a
+  *laterally-adjacent* car it never saw (verified in the BEV debug dump — the nearest close
+  obstacle was to the side/rear in ~90% of cycles and the camera perceived none of them). So a
+  camera-perception shield only guards what it can see. That front-only "barely degrades" result
+  was on the easy sample scenes; **surround cameras and a full degradation sweep now exist** — and
+  on harder, denser scenes the picture is sharper. See *Perception degradation* next.
 
-1. **Where does the shield's obstacle field come from?** AlpaSim gives the driver camera frames,
-   not geometry. Options to evaluate: (a) run a monocular/stereo depth or occupancy estimator
-   over the camera frames to synthesize a BEV grid the shield can consume (this is exactly the
-   kind of depth step gsplat-rt already does — reuse, don't rebuild), or (b) check whether
-   AlpaSim's renderer/scene service exposes privileged ground-truth geometry for evaluation
-   purposes even though the driver's `predict()` input doesn't carry it.
-2. **The shield outputs a per-step command, AlpaSim wants a trajectory.** Need to roll the
-   kinematic bicycle forward under the shield's certified `(accel, steer)` for
-   `context_length / output_frequency_hz` steps to produce the `(T, 2)` waypoint sequence
-   `ModelPrediction` expects, then re-run the shield closed-loop as new frames arrive.
+## Perception degradation — the certificate is only as good as what the camera sees
 
-Neither is solved yet. This repo starts with the plugin skeleton and an empty obstacle field so
-the AlpaSim harness runs end-to-end with an inert shield before either problem is tackled for
-real.
+The shield's guarantee is computed against an obstacle field. Feed it ground-truth geometry and it
+holds; feed it a *learned* obstacle field and the guarantee is only as sound as the perception under
+it — the exact failure a safety shield exists to catch. This repo now measures that degradation
+head-on. A real 5-camera **ftheta surround** rig (per-scene fisheye calibration read from the USDZ)
+feeds monocular metric depth (Depth-Anything) and a **SegFormer** semantic filter into the same
+shield; SegFormer was first verified to label vehicles/pedestrians correctly on the distorted
+fisheye frames. Then, across **10 curated NuRec scenes × n = 10 rollouts**, the obstacle field was
+swapped between ground-truth actors and camera perception with everything else held fixed:
 
-## Plan
+| 10 scenes, n = 10 | GT geometry | learned camera perception |
+| --- | --- | --- |
+| **at-fault collision rate** | **0.02** | **0.23** (~10×) |
+| route progress | 0.62 | 0.59 (≈ equal) |
 
-1. Scaffold: plugin skeleton registered with AlpaSim's entry-point system (`alpasim.models` for
-   the driver, `alpasim.configs` for its Hydra configs), empty `ObstacleField`, no perception
-   yet. Interface verified against AlpaSim's upstream source.
-2. Get AlpaSim running against its own bundled sample/demo scenes with the inert driver — prove
-   the harness plumbing works before any shield logic is real. **Needs a machine with AlpaSim
-   installed; can't be done from the Mac dev box**, which is why the tests here stop at the
-   AlpaSim boundary.
-3. Solve problem 1 (obstacle field from camera frames) with the smallest thing that works.
-4. Wire in kitti-nav's actual shield + trajectory rollout (problem 2).
-5. Compare: shielded vs. unshielded, and against AlpaSim's stock drivers (VaVAM, Transfuser),
-   on collision rate — the same measured-honesty standard as kitti-nav's `RESULTS.md`.
+![Per-scene degradation](results/tier1_degradation.png)
 
-## Layout
+**Learned camera perception takes the shield's at-fault rate from near-zero (0.02, essentially
+crash-free with true geometry) to 0.23 — roughly an order of magnitude — at unchanged progress. The
+degradation is in *safety*, not mobility.** The mechanism is concrete: the camera **under-perceives
+in dense traffic**. On the sharpest scene the GT field carries ~250 obstacles per cycle and the
+shield never crashes; the camera field carries ~70, misses the collision-relevant one, and crashes
+in 7 of 10 rollouts. On another the obstacle *counts* match but the camera *mis-locates* the
+relevant vehicle. "Provably no collisions" becomes "no collisions *if perception was right*," and
+this measures how much it isn't.
+
+Filling in the middle rungs of the perception ladder — front-camera mono depth, and surround
+without the semantic filter — turns the two endpoints into a full gradient:
+
+![Perception ladder](results/tier1_ladder.png)
+
+| at-fault (GT & semantic n=10; middle n=5) | GT | front (mono) | surround (gated) | surround (+ semantic) |
+| --- | --- | --- | --- | --- |
+| collision rate | 0.02 | 0.20 | 0.34 | 0.23 |
+| route progress | 0.62 | 0.70 | 0.54 | 0.59 |
+
+**Every learned rung degrades the guarantee sharply versus ground truth (GT is essentially
+crash-free) — and it is *not* monotonic in "sophistication."** Surround-gated is the *worst* (0.34):
+its side cameras feed the shield abeam actors that trip kitti-nav's omnidirectional-`clearance`
+over-braking (visible as the progress dip, 0.54), while its geometric gate still under-perceives the
+collision-relevant obstacle. Adding the **semantic filter helps** (0.34 → 0.23) by keeping actor
+pixels and dropping clutter. Front-mono has
+the *highest* progress (0.70 — a forward cone can't over-brake for side actors) but degrades safety
+too. The lesson: more cameras and coverage are not automatically safer under a shield tuned for a
+narrower domain; *what* the perception feeds the certificate matters more than *how much*. (The
+front rung is ungated by config, so read it as texture; the controlled contrast is GT vs
+surround-semantic. The side-actor over-braking is addressed by a staged, gated fix —
+`SHIELD_SIDE_CORRIDOR`, pending a box A/B.)
+
+Honest caveats: the headline endpoints (GT, surround-semantic) are at n = 10; per-scene at-fault
+rates still carry sizable variance (VaVAM is stochastic), so read them as directional — but the
+aggregate contrast (GT ~0.02 vs camera ~0.23) is robust. The GT baseline uses AlpaSim's near-clean
+`rig_est` ego frame (localization noise is identity by default), so this isolates *perception*, not
+localization. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam detail in
+[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
+
+## The gap, and how it was closed
+
+AlpaSim's driver interface (`alpasim_driver.models.base.BaseTrajectoryModel`) is **vision-first**:
+a driver receives `PredictionInput` (multi-camera RGB, speed, a coarse LEFT/STRAIGHT/RIGHT
+command, `ego_pose_history`, an optional route, ...) and must return a `ModelPrediction` — **6-DoF
+waypoint poses** in the rig frame, not a low-level `(accel, steer)`. Nothing in that input carries
+geometry.
+
+kitti-nav's shield (`kitti_nav.vehicle.safety_shield`) is the opposite shape: it filters a per-step
+`(accel_cmd, steer_cmd)` against an `ObstacleField` and returns a certified-safe `(accel, steer)`.
+So this was never a drop-in adapter. Two real problems, both now solved:
+
+1. **Where does the shield's obstacle field come from?** AlpaSim hands the driver camera frames,
+   not geometry — but the same geometry the simulator steps is loadable straight off the scene
+   `.usdz` artifact (`alpasim_utils.scene_data_source`). `obstacles.py`/`scene.py` sample the
+   scene's actors at the current ego pose into a kitti-nav `CircleField`. This is the privileged,
+   "ground-truth geometry" arm: the scene id is withheld from real benchmark runs by design, so
+   it is a baseline, not a leaderboard score — the sharper experiment (not yet built) swaps in
+   learned perception and measures how much the certificate degrades.
+2. **The shield outputs a per-step command; AlpaSim wants a trajectory — and there's a policy to
+   filter.** `control.py` is a pure-pursuit + speed-profile tracker that turns the inner policy's
+   waypoints into the per-step commands the shield certifies; the shield then rolls them forward
+   into the waypoint sequence `ModelPrediction` expects. When the shield doesn't intervene, the
+   policy's plan is passed through verbatim (a filter only alters its input when it must).
+
+## How it works
+
+`ShieldedDriver` (registered as `shielded` / `shielded_vavam`) is a decorator over any registered
+`alpasim.models` policy, named via `$SHIELD_INNER_MODEL`:
 
 ```
-src/shield_in_alpasim/
-  driver.py              # the AlpaSim driver plugin
-  configs/driver/        # Hydra configs, discovered via the alpasim.configs entry point
-tests/                   # pure-Python tests, no AlpaSim/GPU required to run
+inner policy → proposed waypoints → pure-pursuit tracker → (accel, steer) per step
+   → kitti-nav shield (braking-aware, against ground-truth CircleField)
+   → certified waypoints    [or the policy's plan verbatim if the shield had no objection]
 ```
+
+Four behaviours, each measured on the box and each toggleable by env var for A/B:
+- **trajectory horizon** — emit ≥ the controller's 2 s MPC horizon (a 0.6 s plan got clamped to
+  its endpoint and braked to a stop; both arms stalled at ~8 m before this).
+- **passthrough** (`SHIELD_PASSTHROUGH`) — emit the policy's plan when the shield is quiet.
+- **rear-filter** (`SHIELD_REAR_FILTER`) — ignore obstacles a forward-only shield can't hit.
+- **out-of-domain guard** (`SHIELD_OOD_GUARD`) — defer to the policy above the shield's `max_speed`.
+
+The shield itself is not implemented here — it is imported from kitti-nav (see `ATTRIBUTION.md`).
 
 ## Seeing it work
 
-No AlpaSim, no GPU, no scene assets required:
+No AlpaSim, no GPU, no scene assets — the tracker + shield core is pure numpy:
 
 ```bash
-python3 scripts/preview_trajectory.py     # -> docs/preview.png
+python3 -m pytest -q                    # 53 tests
+python3 scripts/preview_trajectory.py   # -> docs/preview.png
 ```
 
 ![shielded trajectory preview](docs/preview.png)
 
-Both panels are the same code path AlpaSim drives — `_rollout`'s `(T, 2)` waypoints, the
-ones `ModelPrediction.from_planar` lifts into poses. Left: clear road, waypoints evenly
-spaced at `v/output_frequency_hz`. Right: an obstacle in the lane, the shield brakes, and
-the waypoints bunch up and stop at 15.8 m — short of the obstacle surface at 20.5 m.
+Both panels are the code path AlpaSim drives — `_rollout`'s `(T, 2)` waypoints. Left: clear road.
+Right: an obstacle in the lane, the shield brakes, and the waypoints stop short of it. (This panel
+injects an obstacle by hand; inside AlpaSim the field comes from the scene's real actors.)
 
-Caveat worth stating plainly: **the right-hand panel injects an obstacle field by hand.**
-Under AlpaSim the field is empty (problem 1), so a real sim video today shows a car
-driving straight and a shield that never fires. Solving problem 1 is what makes the
-in-sim video worth watching.
-
-Inside AlpaSim, the views come from its own eval stage: `eval.video.video_layouts=[DEFAULT]`
-renders a BEV map + camera + metrics `mp4` per rollout, and the eval output sorts clips
-into per-violation directories (`collision_at_fault`, `offroad`, ...). That last part is
-the real scoreboard for this project — the shielded driver's `collision_at_fault/` should
-be empty where an unshielded run's is not.
+Inside AlpaSim the views come from its own eval stage (`eval.video.video_layouts=[DEFAULT]`), which
+renders a BEV + camera + metrics `mp4` per rollout and sorts clips into per-violation directories
+(`collision_at_fault/`, `offroad/`). That directory count is the real scoreboard.
 
 ## Running it
 
-The plugin is CPU-only — the shield is numpy, so unlike AlpaSim's stock drivers it needs no
-GPU and no checkpoint. From an AlpaSim checkout:
+The full pipeline needs a machine with AlpaSim, a GPU (for VaVAM; the shield itself is numpy), and
+NuRec scene assets. The driver-container wiring (mounting the out-of-tree plugin + kitti-nav into
+the `alpasim-base` image and installing them at container start) is baked into the `shielded_vavam`
+config, so from an AlpaSim checkout it is:
 
 ```bash
-uv pip install -e path/to/shield-in-alpasim
-uv run alpasim-info          # should list `shielded` under alpasim.models
-# then reference it in a run as driver=shielded
+# arm the shield with the scene's ground-truth geometry (container-side path), then:
+export SHIELD_SCENE_USDZ_IN_CONTAINER=/mnt/nre-data/all-usdzs/<scene>.usdz
+uv run alpasim_wizard deploy=local topology=1gpu driver=shielded_vavam \
+    scenes.scene_ids='[clipgt-...]' eval.video.video_layouts=[DEFAULT]
 ```
+
+`scripts/scene_sweep.sh` and `scripts/shield_ab.sh` run the unshielded-vs-shielded sweep and the
+per-flag A/Bs. [`docs/BOX_SETUP.md`](docs/BOX_SETUP.md) has the full cost-aware box runbook, and
+[`HANDOFF.md`](HANDOFF.md) is the session-by-session record of how this was built and debugged.
+
+## Why a separate repo
+
+Same reason [kitti-nav](https://github.com/matthewhamilton3141/kitti-nav) split off from
+[gsplat-rt](https://github.com/matthewhamilton3141/gsplat-rt): a different dependency stack
+(AlpaSim's microservices, NuRec assets, a driver-plugin entry-point system) and a different story
+(closed-loop validation of a driving policy). This repo consumes kitti-nav's shield as a dependency
+rather than duplicating it.
 
 ## Dependencies
 
-- [kitti-nav](https://github.com/matthewhamilton3141/kitti-nav) — the shield, vendored as a
-  sibling checkout (see `ATTRIBUTION.md`), not copied.
+- [kitti-nav](https://github.com/matthewhamilton3141/kitti-nav) — the shield, a sibling checkout
+  (see `ATTRIBUTION.md`), not copied.
 - [AlpaSim](https://github.com/NVlabs/alpasim) — the harness this plugs into. Apache 2.0.
 
 ## License

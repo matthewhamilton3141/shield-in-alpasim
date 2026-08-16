@@ -23,6 +23,8 @@ see ATTRIBUTION.md.
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import logging
 import os
 
@@ -76,6 +78,11 @@ EMPTY_FIELD = CircleField(None)
 # Drop obstacles the shield cannot hit by moving forward — set SHIELD_REAR_FILTER=0 to disable.
 REAR_FILTER_ENV_VAR = "SHIELD_REAR_FILTER"
 
+# Lateral half-width (m) beyond which abeam/behind discs are dropped as un-hittable by a
+# forward-braking maneuver (finding-2 over-conservatism; see `forward_relevant_field`). Unset ->
+# off (rear cut only). Rides on the rear filter, so it needs SHIELD_REAR_FILTER=1 (the default).
+SIDE_CORRIDOR_ENV_VAR = "SHIELD_SIDE_CORRIDOR"
+
 # Emit the inner policy's plan unchanged when the shield doesn't intervene (a true filter only
 # acts when it must). Set SHIELD_PASSTHROUGH=0 to always emit our tracked re-roll instead.
 PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
@@ -84,27 +91,74 @@ PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
 # kinematic model clamps speed to max_speed). Set SHIELD_OOD_GUARD=0 to shield anyway.
 OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
 
+# Where the shield's obstacle field comes from: `gt` (default; ground-truth scene geometry) or
+# `camera` (learned metric-depth perception over the advertised cameras — the degradation
+# experiment; one front camera, or the full surround rig when several are advertised).
+OBSTACLE_SOURCE_ENV_VAR = "SHIELD_OBSTACLE_SOURCE"
 
-def forward_relevant_field(field, cfg):
-    """Drop obstacle discs that sit entirely behind the ego's rear bumper.
+# Which of the advertised (perception) cameras the *inner policy* consumes, comma-separated. We
+# advertise ALL perception cameras so AlpaSim renders the sides/rear for the shield, but the inner
+# policy (e.g. VaVAM) validates against exactly its own set, so it must be handed only these. Unset
+# -> the policy sees every advertised camera (the single-camera case, unchanged).
+POLICY_CAMERAS_ENV_VAR = "SHIELD_POLICY_CAMERAS"
 
-    The shield never reverses (`min_speed=0`) and its braking rollout only moves *forward*, so a
-    disc behind the rear bumper only recedes — it can never be hit. But kitti-nav's `clearance`
-    is omnidirectional and `can_stop_safely` refuses to certify when the *current* clearance is
-    below `safety_margin`, so a car close behind freezes the ego in place. That is both useless
-    (braking cannot avoid a rear threat) and measurably costly (finding 2: it halved progress on
-    one sweep scene). This removes exactly those discs and nothing else.
+# Batch the N surround depth forward passes into one call (see MultiCameraObstacleSource). Off by
+# default; SHIELD_DEPTH_BATCH=1 enables it as the cost lever for the 4× multicam depth budget.
+DEPTH_BATCH_ENV_VAR = "SHIELD_DEPTH_BATCH"
 
-    Cut at the rear bumper (`x = -rear_overhang` in the rig frame, origin at the rear axle)
-    minus `safety_margin`, and use each disc's own forward-most extent (`x + r`) so a disc that
-    only *reaches* the rear corner is kept — conservative against the rear overhang's outward
-    swing on a turn. Discs beside or ahead of the ego are untouched: those are real.
+# If set, dump per-cycle perceived (camera) vs true (GT) obstacle discs here for BEV visualisation
+# (scripts/make_bev_video.py). Off by default — pure debug instrumentation, no effect on driving.
+DEBUG_DIR_ENV_VAR = "SHIELD_DEBUG_DIR"
+
+# If set (comma-separated camera ids), also dump those cameras' raw frames per cycle into
+# $SHIELD_DEBUG_DIR — for a real-scene video (front/rear views) synced with the BEV. Off by default.
+DEBUG_CAMERAS_ENV_VAR = "SHIELD_DEBUG_CAMERAS"
+
+# Geometric relevance gate on the camera obstacle field (obstacle_source.CorridorGate): drop the
+# roadside static clutter dense depth reconstructs, keep only obstacles in the ego's driving
+# corridor. SHIELD_GATE=1 enables it; optional SHIELD_GATE_XMAX / _HALFWIDTH / _RANGE tune it.
+GATE_ENV_VAR = "SHIELD_GATE"
+
+# Semantic filter (obstacle_source.SemanticDepthMask): keep only vehicle/pedestrian PIXELS before
+# back-projection, so the camera field matches the GT actor field (the *better* clutter filter).
+# SHIELD_SEMANTIC=1 enables it; SHIELD_SEG_MODEL overrides the segmentation model.
+SEMANTIC_ENV_VAR = "SHIELD_SEMANTIC"
+
+
+def forward_relevant_field(field, cfg, side_corridor=None):
+    """Drop obstacle discs a forward-braking maneuver cannot hit. Two cuts, both resting on
+    `min_speed=0` (the shield never reverses, so its rollout only moves the ego *forward*):
+
+    **Rear (always).** Discs entirely behind the rear bumper (`x + r < -(rear_overhang +
+    safety_margin)`, rig frame, origin at the rear axle) only recede as the ego moves forward and
+    can never be hit. But kitti-nav's `clearance` is omnidirectional and `can_stop_safely` refuses
+    to certify when the *current* clearance is below `safety_margin`, so a car close behind freezes
+    the ego — useless (braking cannot avoid a rear threat) and costly (finding 2). Using each disc's
+    forward-most extent (`x + r`) keeps a disc that only *reaches* the rear corner — conservative
+    against the rear overhang's swing on a turn.
+
+    **Lateral (opt-in; `side_corridor` = half-width in metres, `None` = off).** The same
+    over-conservatism fires for actors *abeam* the ego: `clearance` counts a car in the next lane
+    as un-cleared even though a forward, braking-dominant maneuver recedes from it and the ego
+    footprint (half-width `width/2`) never reaches one already laterally clear. This drops discs
+    that are **not ahead of the front bumper** (`x - r < front_overhang`) **and** laterally beyond
+    the corridor (`|y| - r > side_corridor`). Everything *ahead of the front bumper* is kept
+    regardless of lateral offset — the tracked path may steer toward it — as is everything within
+    the corridor (a car merging from beside-behind still matters). HEURISTIC, not a proof: a hard
+    evasive turn within the braking distance could still reach a dropped disc, so it is gated
+    (`SHIELD_SIDE_CORRIDOR`) and meant to be A/B'd on the box, not assumed. Set the corridor to
+    `width/2 + safety_margin` plus a lateral-tracking-error margin; too tight drops obstacles a
+    steering maneuver could reach.
     """
     circles = np.asarray(getattr(field, "circles", np.zeros((0, 3))), float).reshape(-1, 3)
     if len(circles) == 0:
         return field
-    rear_cut = -(cfg.rear_overhang + cfg.safety_margin)
-    keep = (circles[:, 0] + circles[:, 2]) >= rear_cut
+    x, y, r = circles[:, 0], circles[:, 1], circles[:, 2]
+    keep = (x + r) >= -(cfg.rear_overhang + cfg.safety_margin)
+    if side_corridor is not None:
+        ahead = (x - r) >= cfg.front_overhang            # nearest edge past the front bumper
+        within = (np.abs(y) - r) <= side_corridor        # laterally within the ego's reach
+        keep = keep & (ahead | within)
     if keep.all():
         return field
     return CircleField(circles[keep])
@@ -118,6 +172,17 @@ def _coast(_state) -> tuple[float, float]:
     point of the "the shield needs a policy" caveat in HANDOFF.md.
     """
     return 0.0, 0.0
+
+
+def _with_camera_images(prediction_input, images):
+    """A copy of `prediction_input` with `camera_images` replaced — for handing the inner policy
+    only its own cameras. Uses `dataclasses.replace` for AlpaSim's frozen `PredictionInput`,
+    falling back to a shallow copy + attribute set for anything else (test fakes)."""
+    if dataclasses.is_dataclass(prediction_input) and not isinstance(prediction_input, type):
+        return dataclasses.replace(prediction_input, camera_images=images)
+    clone = copy.copy(prediction_input)
+    clone.camera_images = images
+    return clone
 
 
 def rollout_diagnostics(field, state0: VehicleState, cfg: VehicleConfig, policy) -> dict:
@@ -172,10 +237,13 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         horizon_s: float = DEFAULT_HORIZON_S,
         obstacles=None,
         scene_source: SceneObstacleSource | None = None,
+        obstacle_source=None,
         inner_model=None,
+        policy_camera_ids: list[str] | None = None,
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
         ood_guard: bool | None = None,
+        side_corridor: float | None = None,
     ):
         self._cfg = cfg
         # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
@@ -185,6 +253,14 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             os.environ.get(REAR_FILTER_ENV_VAR, "1") != "0" if rear_filter is None
             else rear_filter
         )
+        # Also drop abeam/behind discs laterally beyond this half-width (m) — finding-2 side-actor
+        # over-conservatism (see `forward_relevant_field`). Unset/None -> off (rear cut only).
+        # Rides on the rear filter. Explicit constructor arg wins (tests).
+        if side_corridor is None:
+            _sc = os.environ.get(SIDE_CORRIDOR_ENV_VAR)
+            self._side_corridor = float(_sc) if _sc else None
+        else:
+            self._side_corridor = side_corridor
         # Emit the inner policy's plan verbatim when the shield doesn't intervene, rather than
         # our tracked re-roll (whose lateral error otherwise drifts the car off the logged
         # route). On by default; `SHIELD_PASSTHROUGH=0` disables it.
@@ -199,6 +275,12 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             else ood_guard
         )
         self._camera_ids = list(camera_ids)
+        # The cameras the inner policy consumes — a subset of the advertised perception cameras.
+        # None -> all of them (single-camera case). The shield perceives from all advertised
+        # cameras; the policy is handed only its own (see `_policy_input`, `POLICY_CAMERAS_ENV_VAR`).
+        self._policy_camera_ids = (
+            list(camera_ids) if policy_camera_ids is None else list(policy_camera_ids)
+        )
         self._context_length = context_length
         self._output_frequency_hz = output_frequency_hz
         # Emit enough waypoints to span `horizon_s` at the output rate, so the trajectory
@@ -212,9 +294,21 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # `scene_source` is present, since that resamples per call as actors move.
         self._obstacles = EMPTY_FIELD if obstacles is None else obstacles
         self._scene_source = scene_source
+        # The learned-perception arm: any `ObstacleSource` (see `obstacle_source.py`) that builds
+        # the field from camera frames. When set it takes precedence over the ground-truth
+        # `scene_source` — this is the one seam the perfect-vs-learned experiment swaps.
+        self._obstacle_source = obstacle_source
         # The policy being shielded, or None for the coasting baseline. Any object with a
         # `predict(prediction_input) -> ModelPrediction` — i.e. another `BaseTrajectoryModel`.
         self._inner_model = inner_model
+        # Optional per-cycle BEV debug dump (perceived vs true discs); off unless the env is set.
+        self._debug_dir = os.environ.get(DEBUG_DIR_ENV_VAR) or None
+        # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
+        # with the BEV). Comma-separated camera ids; empty = off.
+        self._debug_cameras = [
+            c.strip() for c in os.environ.get(DEBUG_CAMERAS_ENV_VAR, "").split(",") if c.strip()
+        ]
+        self._debug_i = 0
 
     @classmethod
     def from_config(cls, model_cfg, device, camera_ids, context_length, output_frequency_hz):
@@ -233,18 +327,146 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         if scene_source is not None and scene_source.ego_vehicle_config is not None:
             cfg = scene_source.ego_vehicle_config
 
+        # `camera_ids` is every camera AlpaSim delivers (all perception cameras). The inner policy
+        # gets only its subset so its own `_validate_cameras` passes; the shield perceives from all.
+        policy_camera_ids = cls._resolve_policy_cameras(camera_ids)
         inner_model = cls._build_inner_model(
-            model_cfg, device, camera_ids, context_length, output_frequency_hz
+            model_cfg, device, policy_camera_ids, context_length, output_frequency_hz
         )
+        obstacle_source = cls._build_obstacle_source(device, camera_ids)
 
         return cls(
             cfg=cfg,
             camera_ids=camera_ids,
+            policy_camera_ids=policy_camera_ids,
             context_length=context_length or 1,
             output_frequency_hz=output_frequency_hz,
             scene_source=scene_source,
+            obstacle_source=obstacle_source,
             inner_model=inner_model,
         )
+
+    @staticmethod
+    def _resolve_policy_cameras(camera_ids) -> list[str]:
+        """The inner policy's cameras, from `$SHIELD_POLICY_CAMERAS` (comma-separated), or all of
+        `camera_ids` when unset. Every named camera must actually be advertised, or the policy
+        would ask for a frame AlpaSim never renders."""
+        raw = os.environ.get(POLICY_CAMERAS_ENV_VAR, "").strip()
+        if not raw:
+            return list(camera_ids)
+        cams = [c.strip() for c in raw.split(",") if c.strip()]
+        missing = [c for c in cams if c not in camera_ids]
+        if missing:
+            raise ValueError(
+                f"{POLICY_CAMERAS_ENV_VAR}={raw!r} names cameras not advertised in "
+                f"use_cameras {list(camera_ids)}: {missing}"
+            )
+        logger.info("Policy cameras %s of advertised %s (shield perceives from all)",
+                    cams, list(camera_ids))
+        return cams
+
+    @classmethod
+    def _build_obstacle_source(cls, device, camera_ids):
+        """The learned-perception obstacle source when `$SHIELD_OBSTACLE_SOURCE=camera`, else None.
+
+        None keeps the ground-truth arm (the shield reads the scene's actors). `camera` swaps in
+        a monocular metric-depth net over the front camera — the same shield, a *learned* obstacle
+        field, so the run measures how much the certificate degrades under real perception. The
+        depth-net imports (`torch`/`transformers`) are deferred to here so the ground-truth path
+        and the Mac tests never touch them.
+        """
+        kind = os.environ.get(OBSTACLE_SOURCE_ENV_VAR, "gt").lower()
+        if kind in ("", "gt", "ground_truth", "groundtruth"):
+            return None
+        if kind != "camera":
+            raise ValueError(f"{OBSTACLE_SOURCE_ENV_VAR}={kind!r}; expected 'gt' or 'camera'.")
+
+        from shield_in_alpasim.depth import DEFAULT_MODEL, HFDepthModel
+        from shield_in_alpasim.obstacle_source import (
+            CameraObstacleSource,
+            MultiCameraObstacleSource,
+            load_ftheta_cameras,
+        )
+        from shield_in_alpasim.scene import SCENE_ENV_VAR
+
+        model_name = os.environ.get("SHIELD_DEPTH_MODEL", DEFAULT_MODEL)
+        depth_model = HFDepthModel(model_name, device=str(device))
+        gate = cls._corridor_gate_from_env()          # None unless SHIELD_GATE is on
+        masker = cls._semantic_masker_from_env(device)  # None unless SHIELD_SEMANTIC is on
+        src_kw = dict(point_filter=gate, depth_masker=masker)
+        # Several advertised cameras -> the surround rig fuses them all into one field; a single
+        # camera -> the original front-only source. Perception uses every advertised camera,
+        # regardless of which subset the inner policy consumes.
+        if len(camera_ids) > 1:
+            batched = os.environ.get(DEPTH_BATCH_ENV_VAR, "0") == "1"
+            # Load the REAL per-scene ftheta calibration from the same USDZ AlpaSim renders from,
+            # so perception matches the rendered geometry and the rear cameras carry their true
+            # rear-quarter angles (full 360, no blind wedge). Needs the scene USDZ armed.
+            usdz = os.environ.get(SCENE_ENV_VAR)
+            if usdz and os.path.exists(usdz):
+                try:
+                    cams = load_ftheta_cameras(usdz, list(camera_ids))
+                except (FileNotFoundError, KeyError) as exc:
+                    # Some scenes ship no per-clip calibration parquet (the renderer then uses a
+                    # synthesized rig), or lack one of the requested cameras. We can't do correct
+                    # surround geometry without it, so degrade to the verified front-only pinhole
+                    # arm rather than crash the run (or use the mis-posed hardcoded surround rig).
+                    logger.warning(
+                        "No usable per-scene surround calibration (%s); falling back to FRONT-ONLY "
+                        "camera perception for this scene (no surround coverage here).", exc)
+                    return CameraObstacleSource.front_wide(
+                        depth_model, camera_id="camera_front_wide_120fov", **src_kw)
+                logger.info(
+                    "Obstacle field from SURROUND ftheta perception (%d cams from USDZ calib, "
+                    "depth %s, batched=%s, gate=%s, semantic=%s)",
+                    len(cams), model_name, batched, bool(gate), bool(masker))
+                return MultiCameraObstacleSource(depth_model, cams, batched=batched, **src_kw)
+            logger.warning(
+                "%s not set/found (%r): surround perception falling back to FRONT-ONLY camera "
+                "perception (no scene USDZ -> no real calibration).", SCENE_ENV_VAR, usdz)
+            return CameraObstacleSource.front_wide(
+                depth_model, camera_id="camera_front_wide_120fov", **src_kw)
+        logger.info("Obstacle field from CAMERA perception (depth %s, gate=%s, semantic=%s)",
+                    model_name, bool(gate), bool(masker))
+        return CameraObstacleSource.front_wide(depth_model, camera_id=camera_ids[0], **src_kw)
+
+    @staticmethod
+    def _corridor_gate_from_env():
+        """A `CorridorGate` when `$SHIELD_GATE` is on, else None (keep the whole field).
+
+        Optional `SHIELD_GATE_XMAX` / `SHIELD_GATE_HALFWIDTH` / `SHIELD_GATE_RANGE` override the
+        corridor bounds so the gate can be tuned on the box without a redeploy.
+        """
+        if os.environ.get(GATE_ENV_VAR, "0") != "1":
+            return None
+        from shield_in_alpasim.obstacle_source import CorridorGate
+
+        def _f(name, default):
+            v = os.environ.get(name)
+            return float(v) if v else default
+
+        gate = CorridorGate(
+            x_max=_f("SHIELD_GATE_XMAX", 25.0),
+            half_width=_f("SHIELD_GATE_HALFWIDTH", 4.0),
+            max_range_m=_f("SHIELD_GATE_RANGE", 20.0),
+        )
+        logger.info("Corridor gate ON: x<=%.1f, |y|<=%.1f, range<=%.1f",
+                    gate.x_max, gate.half_width, gate.max_range_m)
+        return gate
+
+    @staticmethod
+    def _semantic_masker_from_env(device):
+        """A `SemanticDepthMask` when `$SHIELD_SEMANTIC` is on, else None. Loads the segmentation
+        model (box-only, deferred import), keeping only vehicle/pedestrian pixels."""
+        if os.environ.get(SEMANTIC_ENV_VAR, "0") != "1":
+            return None
+        from shield_in_alpasim.obstacle_source import SemanticDepthMask
+        from shield_in_alpasim.segmentation import DEFAULT_MODEL as SEG_DEFAULT
+        from shield_in_alpasim.segmentation import HFSegmenter
+
+        seg_name = os.environ.get("SHIELD_SEG_MODEL", SEG_DEFAULT)
+        logger.info("Semantic filter ON: keeping actor pixels via %s", seg_name)
+        return SemanticDepthMask(HFSegmenter(seg_name, device=str(device)))
 
     @staticmethod
     def _build_inner_model(model_cfg, device, camera_ids, context_length, output_frequency_hz):
@@ -290,18 +512,64 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         the safe direction to fail here only because the car is still under ground-truth
         replay at that point (`force_gt_duration_us`); it is not yet driving on the shield.
         """
-        if self._scene_source is None:
+        if self._obstacle_source is not None:
+            # Learned-perception arm: build the field from camera frames.
+            field = self._obstacle_source.field_for(prediction_input)
+            if self._debug_dir:
+                self._dump_debug(prediction_input, field)
+        elif self._scene_source is not None:
+            # Ground-truth arm: sample the scene's actors at the current ego pose.
+            ego = ego_pose_from_history(prediction_input.ego_pose_history)
+            if ego is None:
+                return self._obstacles
+            ego_xy, ego_yaw, timestamp_us = ego
+            field = self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
+        else:
             return self._obstacles
 
-        ego = ego_pose_from_history(prediction_input.ego_pose_history)
-        if ego is None:
-            return self._obstacles
-
-        ego_xy, ego_yaw, timestamp_us = ego
-        field = self._scene_source.field_at(ego_xy, ego_yaw, timestamp_us)
         if self._rear_filter:
-            field = forward_relevant_field(field, self._cfg)
+            field = forward_relevant_field(field, self._cfg, side_corridor=self._side_corridor)
         return field
+
+    def _dump_debug(self, prediction_input, camera_field) -> None:
+        """Save this cycle's perceived (camera) vs true (GT) discs for the BEV video.
+
+        Samples the ground-truth field alongside the camera field the shield actually uses, both
+        in the rig frame, so `scripts/make_bev_video.py` can show "what the camera sees vs what's
+        really there". Debug-only; guarded by `$SHIELD_DEBUG_DIR`.
+        """
+        cam = np.asarray(getattr(camera_field, "circles", np.zeros((0, 3))), float)
+        gt = np.zeros((0, 3))
+        if self._scene_source is not None:
+            ego = ego_pose_from_history(prediction_input.ego_pose_history)
+            if ego is not None:
+                gt = np.asarray(getattr(self._scene_source.field_at(*ego), "circles", gt), float)
+        os.makedirs(self._debug_dir, exist_ok=True)
+        np.savez(os.path.join(self._debug_dir, "cyc_%04d.npz" % self._debug_i),
+                 camera=cam, gt=gt, speed=float(prediction_input.speed))
+        if self._debug_cameras:
+            self._dump_camera_frames(prediction_input)
+        self._debug_i += 1
+
+    def _dump_camera_frames(self, prediction_input) -> None:
+        """Save the raw frames of `$SHIELD_DEBUG_CAMERAS` this cycle (downscaled JPEGs) for a
+        real-scene video synced with the BEV. Best-effort: a missing camera or a non-image frame
+        is skipped, never fatal (this is debug instrumentation, not part of driving)."""
+        from PIL import Image
+
+        from shield_in_alpasim.obstacle_source import _frame_image
+
+        for cam in self._debug_cameras:
+            frames = prediction_input.camera_images.get(cam)
+            if not frames:
+                continue
+            arr = np.asarray(_frame_image(frames[-1]))
+            if arr.ndim != 3:
+                continue
+            pil = Image.fromarray(arr.astype("uint8"))
+            pil.thumbnail((720, 720))  # keep the dump light; full res isn't needed for a video
+            pil.save(os.path.join(self._debug_dir, "cyc_%04d_%s.jpg" % (self._debug_i, cam)),
+                     quality=85)
 
     def _rollout(self, initial_speed: float, obstacles=None, policy=None,
                  horizon_steps: int | None = None, return_stats: bool = False):
@@ -351,6 +619,24 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             xy[t] = states[min((t + 1) * substeps_per_waypoint, len(states) - 1)].xy
         return (xy, stats) if return_stats else xy
 
+    def _policy_input(self, prediction_input):
+        """`prediction_input` with `camera_images` narrowed to the inner policy's cameras.
+
+        We advertise all perception cameras so AlpaSim renders the sides/rear for the shield, but
+        the inner policy validates against exactly its own set (`_validate_cameras`), so it must
+        not see the extras. A no-op when the policy already consumes every advertised camera (the
+        single-camera case).
+        """
+        images = getattr(prediction_input, "camera_images", None)
+        if not images or set(self._policy_camera_ids) == set(images):
+            return prediction_input
+        filtered = {c: images[c] for c in self._policy_camera_ids if c in images}
+        return _with_camera_images(prediction_input, filtered)
+
+    def _inner_predict(self, prediction_input):
+        """Run the inner policy on its own cameras only (see `_policy_input`)."""
+        return self._inner_model.predict(self._policy_input(prediction_input))
+
     def _proposed_waypoints(self, prediction_input) -> np.ndarray | None:
         """Ground-plane `(T, 2)` waypoints from the inner policy, or None when coasting.
 
@@ -360,7 +646,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         """
         if self._inner_model is None:
             return None
-        prediction = self._inner_model.predict(prediction_input)
+        prediction = self._inner_predict(prediction_input)
         return np.asarray(prediction.selected_positions, dtype=float)[:, :2]
 
     def _out_of_domain(self, speed: float) -> bool:
@@ -376,6 +662,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
 
     def predict(self, prediction_input: "PredictionInput") -> "ModelPrediction":
         self._validate_cameras(prediction_input.camera_images)
+        # Which cameras actually arrived — the surround smoke check (are the side/rear cameras
+        # being delivered, or did AlpaSim only render the policy's front cam?). One line per cycle.
+        logger.info("cameras delivered: %s (policy uses %s)",
+                    sorted(prediction_input.camera_images), self._policy_camera_ids)
         obstacles = self._obstacles_for(prediction_input)
 
         # Coasting baseline (no inner policy): shield-filter a go-straight command.
@@ -383,8 +673,9 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             xy = self._rollout(prediction_input.speed, obstacles, None)
             return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
 
-        # Decorator path: track the inner plan, run it through the shield.
-        inner_prediction = self._inner_model.predict(prediction_input)
+        # Decorator path: track the inner plan, run it through the shield. The inner policy sees
+        # only its own cameras (`_inner_predict`), even though the shield perceives from all.
+        inner_prediction = self._inner_predict(prediction_input)
 
         # Out-of-domain guard: above the shield's modelled speed, defer to the inner policy
         # untouched rather than certify with a model that does not apply (see `_out_of_domain`).
@@ -417,6 +708,10 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
     @property
     def camera_ids(self) -> list[str]:
         return self._camera_ids
+
+    @property
+    def policy_camera_ids(self) -> list[str]:
+        return self._policy_camera_ids
 
     @property
     def context_length(self) -> int:

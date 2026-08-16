@@ -1,0 +1,5 @@
+scene,SHIELD_PASSTHROUGH,collision_at_fault,collision_rear,offroad,dist_m,gt_dist_m,progress,score,status
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,0,1.0,0.0,0.0,72.1,169.8,0.422,0.0,fail
+clipgt-0245ff75-aa3f-46b7-ba87-16a7afb841af,1,0.0,1.0,0.0,69.5,169.8,0.409,0.511,pass
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,0,0.0,0.0,1.0,41.2,107.5,0.374,0.0,fail
+clipgt-026d6a39-bd8f-4175-bc61-fe50ed0403a3,1,0.0,0.0,0.0,95.3,107.5,0.884,1.0,pass
