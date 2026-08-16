@@ -3,17 +3,19 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> ## ⚠⚠ THERE IS A LIVE LAMBDA A100 RIGHT NOW — it is BILLING (~$1.99/hr) ⚠⚠
-> A Lambda **1×A100-40GB** box is **up and fully set up** (as of 2026-08-15, this session). If you
-> are not about to use it, **TERMINATE it** (Lambda console, or it bills all day — no auto-stop).
-> `shield-data` persists, so nothing is lost by terminating.
-> - **Connect:** `ssh ubuntu@150.136.71.147` (my default key `~/.ssh/id_ed25519`; IP is ephemeral —
->   check the Lambda console if it changed). User is `ubuntu`, already in the `docker` group.
-> - **State:** `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` (on `phase3-container-wiring`),
->   `uv sync` done, our plugin installed, **98 tests pass**, VaVAM-S on `~/shield-data` (persistent
->   NFS; `data/nre-artifacts` + `data/drivers` + HF cache symlinked there). A100 driver 580, CUDA 12.8.
-> - **HF token:** NOT stored here (public repo). The user must re-supply `HF_TOKEN` for scene
->   downloads — pass it inline, never write it to the repo/FS.
+> ## ✅ RESULT COMPLETE at n=10 — the box may still be BILLING; TERMINATE it ⚠
+> As of 2026-08-16 the full result is **done and committed** (Tier 0 + the n=10 Tier 1 degradation
+> ladder + mechanism + hero video + write-up). The n=10 sweep was the **last thing that needed the
+> GPU**, so unless you're starting **Tier 2 (shielded-RL)**, the Lambda **1×A100-40GB** box should be
+> **TERMINATED** (Lambda console — no auto-stop; the user was asked to do this at session end).
+> `shield-data` persists, so nothing is lost.
+> - **If the box is still up:** `ssh ubuntu@150.136.71.147` (key `~/.ssh/id_ed25519`; IP ephemeral —
+>   check the console). State: `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on
+>   `phase3-container-wiring`, **102 tests pass**, VaVAM-S + curated scenes downloaded, the
+>   `SHIELD_SIDE_CORRIDOR` fix rsynced (off by default). A100 driver 580, CUDA 12.8.
+> - **Fresh box:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
+> - **HF token:** NOT stored here (public repo). Re-supply `HF_TOKEN` inline for scene downloads —
+>   never write it to the repo/FS.
 >
 > **▶ NEXT: PR to `main`, then decide on Tier 2.** Tier 0 + Tier 1 DONE **at n=10** (sections below):
 > **learned camera perception takes the shield's at-fault rate from ~0.02 (GT, essentially crash-free)
