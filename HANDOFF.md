@@ -59,13 +59,21 @@ handoff's finding-2: GT arm brakes for 17 side actors; camera arm avoids them), 
 then the 10-scene breadth revealed the *safety* degradation the single scene hid (there the camera
 undercounted 84→13 but didn't miss the collision-relevant disc; elsewhere it does).
 
-**Honest caveats:** n=5, high variance (`at_fault_std` up to 0.55, so 0.6 = 3/5); the 4× is
-directional — **n≥10 wanted** for tight bars. Offroad confounds a few scenes (`065dcac9`,`054b5901`,
-`0499fb41` drift, orthogonal to the shield). Two rungs only (GT vs surround-semantic); the middle
-rungs (+loc-noise, front-only, surround-gate) would fill the full ladder. Note: the "+loc-noise"
-rung isn't a simple toggle — AlpaSim's ego frame is **identity (clean) by default** (`policy.py:219`;
-enabling noise needs an egomotion noise model wired in), which is *good* — the GT baseline is
-near-clean localization, so the degradation isolates perception.
+**Full ladder now measured** (`results/tier1_ladder.{png,csv}`, `scripts/make_ladder_figure.py`):
+GT `0.06` → front-mono `0.20` → surround-gated `0.34` → surround-semantic `0.24` at-fault. **Every
+learned rung is 3–6× worse than GT, and it is NOT monotonic** — surround-gated is *worst* (its side
+cameras feed abeam actors that trip the finding-2 over-braking → progress dip to 0.54; the gate still
+under-perceives the collision-relevant obstacle), and the semantic filter *helps* (0.34→0.24). Front
+has highest progress (0.70; a forward cone can't over-brake for side actors). Lesson: more coverage
+isn't automatically safer under a shield tuned for a narrower domain. (Front rung is ungated by
+config — texture, not a controlled rung; the clean contrast stays GT vs surround-semantic.)
+
+**Honest caveats:** n=5, high variance (`at_fault_std` up to 0.55, so 0.6 = 3/5); directional —
+**n≥10 wanted** for tight bars. Offroad confounds a few scenes (`065dcac9`,`054b5901`,`0499fb41`
+drift, orthogonal to the shield). The "+loc-noise" rung isn't a simple toggle — AlpaSim's ego frame
+is **identity (clean) by default** (`policy.py:219`; enabling noise needs an egomotion noise model
+wired in), which is *good* — the GT baseline is near-clean localization, so the degradation isolates
+perception.
 
 **Staged (local, NOT on the box): the finding-2 side-actor fix.** `forward_relevant_field` now takes
 an optional `side_corridor` half-width (env `SHIELD_SIDE_CORRIDOR`, off by default): it drops discs

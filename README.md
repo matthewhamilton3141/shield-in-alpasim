@@ -77,12 +77,33 @@ collision-relevant one, and crashes in 4 of 5 rollouts. On another, the obstacle
 the camera *mis-locates* the relevant vehicle. "Provably no collisions" becomes "no collisions *if
 perception was right*," and this measures how much it isn't.
 
-Honest caveats: n = 5 with high run-to-run variance (VaVAM is stochastic), so the 4× is directional —
-n ≥ 10 would tighten the error bars. The GT baseline uses AlpaSim's near-clean `rig_est` ego frame
-(localization noise is identity by default), so this isolates *perception*, not localization. The
-middle rungs of the perception ladder — front-camera-only, and surround without the semantic filter —
-fill in the gradient between these two endpoints. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam
-detail in [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
+Filling in the middle rungs of the perception ladder — front-camera mono depth, and surround
+without the semantic filter — turns the two endpoints into a full gradient:
+
+![Perception ladder](results/tier1_ladder.png)
+
+| at-fault (10 scenes, n = 5) | GT | front (mono) | surround (gated) | surround (+ semantic) |
+| --- | --- | --- | --- | --- |
+| collision rate | 0.06 | 0.20 | 0.34 | 0.24 |
+| route progress | 0.62 | 0.70 | 0.54 | 0.60 |
+
+**Every learned rung degrades the guarantee 3–6× versus ground truth — and it is *not* monotonic in
+"sophistication."** Surround-gated is the *worst* (0.34): its side cameras feed the shield abeam
+actors that trip kitti-nav's omnidirectional-`clearance` over-braking (visible as the progress dip,
+0.54), while its geometric gate still under-perceives the collision-relevant obstacle. Adding the
+**semantic filter helps** (0.34 → 0.24) by keeping actor pixels and dropping clutter. Front-mono has
+the *highest* progress (0.70 — a forward cone can't over-brake for side actors) but degrades safety
+too. The lesson: more cameras and coverage are not automatically safer under a shield tuned for a
+narrower domain; *what* the perception feeds the certificate matters more than *how much*. (The
+front rung is ungated by config, so read it as texture; the controlled contrast is GT vs
+surround-semantic. The side-actor over-braking is addressed by a staged, gated fix —
+`SHIELD_SIDE_CORRIDOR`, pending a box A/B.)
+
+Honest caveats: n = 5 with high run-to-run variance (VaVAM is stochastic), so the numbers are
+directional — n ≥ 10 would tighten the error bars. The GT baseline uses AlpaSim's near-clean
+`rig_est` ego frame (localization noise is identity by default), so this isolates *perception*, not
+localization. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam detail in
+[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
 
 ## The gap, and how it was closed
 
