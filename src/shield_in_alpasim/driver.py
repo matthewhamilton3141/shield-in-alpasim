@@ -78,6 +78,11 @@ EMPTY_FIELD = CircleField(None)
 # Drop obstacles the shield cannot hit by moving forward — set SHIELD_REAR_FILTER=0 to disable.
 REAR_FILTER_ENV_VAR = "SHIELD_REAR_FILTER"
 
+# Lateral half-width (m) beyond which abeam/behind discs are dropped as un-hittable by a
+# forward-braking maneuver (finding-2 over-conservatism; see `forward_relevant_field`). Unset ->
+# off (rear cut only). Rides on the rear filter, so it needs SHIELD_REAR_FILTER=1 (the default).
+SIDE_CORRIDOR_ENV_VAR = "SHIELD_SIDE_CORRIDOR"
+
 # Emit the inner policy's plan unchanged when the shield doesn't intervene (a true filter only
 # acts when it must). Set SHIELD_PASSTHROUGH=0 to always emit our tracked re-roll instead.
 PASSTHROUGH_ENV_VAR = "SHIELD_PASSTHROUGH"
@@ -120,26 +125,40 @@ GATE_ENV_VAR = "SHIELD_GATE"
 SEMANTIC_ENV_VAR = "SHIELD_SEMANTIC"
 
 
-def forward_relevant_field(field, cfg):
-    """Drop obstacle discs that sit entirely behind the ego's rear bumper.
+def forward_relevant_field(field, cfg, side_corridor=None):
+    """Drop obstacle discs a forward-braking maneuver cannot hit. Two cuts, both resting on
+    `min_speed=0` (the shield never reverses, so its rollout only moves the ego *forward*):
 
-    The shield never reverses (`min_speed=0`) and its braking rollout only moves *forward*, so a
-    disc behind the rear bumper only recedes — it can never be hit. But kitti-nav's `clearance`
-    is omnidirectional and `can_stop_safely` refuses to certify when the *current* clearance is
-    below `safety_margin`, so a car close behind freezes the ego in place. That is both useless
-    (braking cannot avoid a rear threat) and measurably costly (finding 2: it halved progress on
-    one sweep scene). This removes exactly those discs and nothing else.
+    **Rear (always).** Discs entirely behind the rear bumper (`x + r < -(rear_overhang +
+    safety_margin)`, rig frame, origin at the rear axle) only recede as the ego moves forward and
+    can never be hit. But kitti-nav's `clearance` is omnidirectional and `can_stop_safely` refuses
+    to certify when the *current* clearance is below `safety_margin`, so a car close behind freezes
+    the ego — useless (braking cannot avoid a rear threat) and costly (finding 2). Using each disc's
+    forward-most extent (`x + r`) keeps a disc that only *reaches* the rear corner — conservative
+    against the rear overhang's swing on a turn.
 
-    Cut at the rear bumper (`x = -rear_overhang` in the rig frame, origin at the rear axle)
-    minus `safety_margin`, and use each disc's own forward-most extent (`x + r`) so a disc that
-    only *reaches* the rear corner is kept — conservative against the rear overhang's outward
-    swing on a turn. Discs beside or ahead of the ego are untouched: those are real.
+    **Lateral (opt-in; `side_corridor` = half-width in metres, `None` = off).** The same
+    over-conservatism fires for actors *abeam* the ego: `clearance` counts a car in the next lane
+    as un-cleared even though a forward, braking-dominant maneuver recedes from it and the ego
+    footprint (half-width `width/2`) never reaches one already laterally clear. This drops discs
+    that are **not ahead of the front bumper** (`x - r < front_overhang`) **and** laterally beyond
+    the corridor (`|y| - r > side_corridor`). Everything *ahead of the front bumper* is kept
+    regardless of lateral offset — the tracked path may steer toward it — as is everything within
+    the corridor (a car merging from beside-behind still matters). HEURISTIC, not a proof: a hard
+    evasive turn within the braking distance could still reach a dropped disc, so it is gated
+    (`SHIELD_SIDE_CORRIDOR`) and meant to be A/B'd on the box, not assumed. Set the corridor to
+    `width/2 + safety_margin` plus a lateral-tracking-error margin; too tight drops obstacles a
+    steering maneuver could reach.
     """
     circles = np.asarray(getattr(field, "circles", np.zeros((0, 3))), float).reshape(-1, 3)
     if len(circles) == 0:
         return field
-    rear_cut = -(cfg.rear_overhang + cfg.safety_margin)
-    keep = (circles[:, 0] + circles[:, 2]) >= rear_cut
+    x, y, r = circles[:, 0], circles[:, 1], circles[:, 2]
+    keep = (x + r) >= -(cfg.rear_overhang + cfg.safety_margin)
+    if side_corridor is not None:
+        ahead = (x - r) >= cfg.front_overhang            # nearest edge past the front bumper
+        within = (np.abs(y) - r) <= side_corridor        # laterally within the ego's reach
+        keep = keep & (ahead | within)
     if keep.all():
         return field
     return CircleField(circles[keep])
@@ -224,6 +243,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
         ood_guard: bool | None = None,
+        side_corridor: float | None = None,
     ):
         self._cfg = cfg
         # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
@@ -233,6 +253,14 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             os.environ.get(REAR_FILTER_ENV_VAR, "1") != "0" if rear_filter is None
             else rear_filter
         )
+        # Also drop abeam/behind discs laterally beyond this half-width (m) — finding-2 side-actor
+        # over-conservatism (see `forward_relevant_field`). Unset/None -> off (rear cut only).
+        # Rides on the rear filter. Explicit constructor arg wins (tests).
+        if side_corridor is None:
+            _sc = os.environ.get(SIDE_CORRIDOR_ENV_VAR)
+            self._side_corridor = float(_sc) if _sc else None
+        else:
+            self._side_corridor = side_corridor
         # Emit the inner policy's plan verbatim when the shield doesn't intervene, rather than
         # our tracked re-roll (whose lateral error otherwise drifts the car off the logged
         # route). On by default; `SHIELD_PASSTHROUGH=0` disables it.
@@ -500,7 +528,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             return self._obstacles
 
         if self._rear_filter:
-            field = forward_relevant_field(field, self._cfg)
+            field = forward_relevant_field(field, self._cfg, side_corridor=self._side_corridor)
         return field
 
     def _dump_debug(self, prediction_input, camera_field) -> None:

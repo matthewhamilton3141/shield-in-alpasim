@@ -69,6 +69,47 @@ def test_forward_relevant_field_is_a_noop_when_nothing_is_behind():
     assert forward_relevant_field(f, VehicleConfig()) is f  # same object, no copy
 
 
+def test_side_corridor_drops_abeam_actors_but_keeps_ahead_and_in_corridor():
+    # finding-2: with a lateral corridor set, discs that are abeam/behind AND laterally outside it
+    # are un-hittable by a forward-braking maneuver and get dropped; anything ahead of the front
+    # bumper (path may steer to it) or within the corridor (a merging car) stays.
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    cfg = VehicleConfig()  # rear cut -1.27 m ; front_overhang (front bumper) = 4.77 - 0.97 = 3.80 m
+    circles = np.array([
+        [0.0, 4.0, 1.0],    # abeam, |y|-r=3.0 > 2.0, not ahead       -> DROP (the finding-2 case)
+        [10.0, 4.0, 1.0],   # ahead-lateral, x-r=9.0 >= 3.80          -> keep (path may steer to it)
+        [0.0, 1.5, 0.5],    # abeam, |y|-r=1.0 <= 2.0 (in corridor)   -> keep
+        [-1.0, 3.0, 1.0],   # beside-behind, |y|-r=2.0 <= 2.0 (edge)  -> keep (merging car matters)
+        [15.0, 0.0, 1.0],   # dead ahead                              -> keep
+        [-5.0, 0.0, 1.0],   # well behind (rear cut)                  -> drop
+    ])
+    kept = forward_relevant_field(CircleField(circles), cfg, side_corridor=2.0).circles
+    xy = sorted((round(x, 1), round(y, 1)) for x, y in kept[:, :2])
+    assert xy == [(-1.0, 3.0), (0.0, 1.5), (10.0, 4.0), (15.0, 0.0)]  # abeam-far + rear gone
+
+
+def test_side_corridor_none_is_the_rear_only_behavior():
+    # Default (side_corridor=None) must not touch abeam discs -> identical to the rear-only filter.
+    from kitti_nav.vehicle import CircleField
+
+    from shield_in_alpasim.driver import forward_relevant_field
+
+    cfg = VehicleConfig()
+    circles = np.array([[0.0, 4.0, 1.0], [15.0, 0.0, 1.0]])  # an abeam-far disc + one ahead
+    kept = forward_relevant_field(CircleField(circles), cfg).circles  # side_corridor defaults None
+    assert sorted(kept[:, 1].tolist()) == [0.0, 4.0]  # abeam disc kept when the lateral cut is off
+
+
+def test_side_corridor_flag_is_honored_and_reads_env(monkeypatch):
+    assert _driver()._side_corridor is None                 # unset -> off
+    assert _driver(side_corridor=2.5)._side_corridor == 2.5  # explicit arg wins
+    monkeypatch.setenv("SHIELD_SIDE_CORRIDOR", "1.8")
+    assert _driver()._side_corridor == 1.8                   # env parsed to float
+
+
 def test_rear_filter_flag_is_honored():
     assert _driver(rear_filter=False)._rear_filter is False
     assert _driver(rear_filter=True)._rear_filter is True

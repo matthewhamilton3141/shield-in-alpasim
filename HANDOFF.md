@@ -62,7 +62,19 @@ undercounted 84→13 but didn't miss the collision-relevant disc; elsewhere it d
 **Honest caveats:** n=5, high variance (`at_fault_std` up to 0.55, so 0.6 = 3/5); the 4× is
 directional — **n≥10 wanted** for tight bars. Offroad confounds a few scenes (`065dcac9`,`054b5901`,
 `0499fb41` drift, orthogonal to the shield). Two rungs only (GT vs surround-semantic); the middle
-rungs (+loc-noise, front-only, surround-gate) would fill the full ladder.
+rungs (+loc-noise, front-only, surround-gate) would fill the full ladder. Note: the "+loc-noise"
+rung isn't a simple toggle — AlpaSim's ego frame is **identity (clean) by default** (`policy.py:219`;
+enabling noise needs an egomotion noise model wired in), which is *good* — the GT baseline is
+near-clean localization, so the degradation isolates perception.
+
+**Staged (local, NOT on the box): the finding-2 side-actor fix.** `forward_relevant_field` now takes
+an optional `side_corridor` half-width (env `SHIELD_SIDE_CORRIDOR`, off by default): it drops discs
+that are abeam/behind AND laterally beyond the corridor — the omnidirectional-`clearance` braking for
+side actors a forward-braking maneuver can't hit (the diagnostic saw the GT arm brake for 17 such).
+Gated + tunable + 3 unit tests (102 green). It's a heuristic (a hard evasive turn could still reach a
+dropped disc), so **A/B it on the box before defaulting on**: `SHIELD_SIDE_CORRIDOR=2.0` vs unset on
+the dense scenes (`048b974e`,`0245ff75`,`065dcac9`) — expect progress up, at-fault unchanged. Not yet
+rsynced to the box (kept the ladder sweep's comparison clean).
 
 ---
 
