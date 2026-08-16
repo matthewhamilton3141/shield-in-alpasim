@@ -8,6 +8,8 @@ holds 0 collisions on real KITTI drives still earn its keep when dropped into a 
 photorealistic closed-loop environment it was never tuned on — and how much of its guarantee
 survives when its obstacle field comes from *learned perception* instead of ground truth?
 
+**📄 Full write-up with figures: [`docs/RESULTS.md`](docs/RESULTS.md).**
+
 **Status: working, with a result.** The shield runs as a *decorator* over AlpaSim's VaVAM
 camera driver: VaVAM proposes a trajectory, the shield certifies it against ground-truth scene
 geometry, and only alters it when it must. Both problems the earlier scaffold flagged as open
