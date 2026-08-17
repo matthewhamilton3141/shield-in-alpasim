@@ -144,12 +144,26 @@ vetoes — 0 training crashes), but the policy is now rewarded for not *needing*
 | shielded (crutch) | 0.94 | −6.0 |
 | **teacher (pen 0.4)** | **0.49** | 1.5 |
 
-The penalty **roughly halves off-shield collisions (0.94 → 0.49)** and recovers off-shield return
-(−6.0 → +1.5) while keeping shield-on return high (~10.3) and training crash-free. **Honest read:**
-it is a *partial, high-variance* fix (per-seed 0.08–0.84) — some seeds become real teachers, others
-stay crutchy — not a clean solve. A stronger penalty (trades performance) or an
-intervention-*imitation* objective is the next lever. The direction is clear: safe exploration and a
-policy safe *without* the shield are separable goals, and you can push the second with reward shape.
+A single penalty (0.4) only *partially* fixed it (off-shield collision 0.94 → 0.49, high variance),
+so we swept the penalty to map the whole trade-off (`scripts/rl_frontier.py`, 5 seeds):
+
+![frontier](../results/rl_frontier.png)
+
+| penalty | off-shield collision | off-shield return | on-shield return |
+| --- | --- | --- | --- |
+| 0.0 (crutch) | 1.00 | −7.7 | 9.4 |
+| 0.3 | 0.69 | −2.8 | 8.7 |
+| **0.6** | **0.12** | **+4.1** | 6.1 |
+| 1.0 | 0.06 | 2.6 | 3.4 |
+| 1.5 | 0.04 | 0.9 | 1.8 |
+
+**The penalty is a clean, monotone knob** on a safety–performance frontier. At **penalty 0.6** the
+policy — still trained **100% crash-free** — deploys *without* the shield at collision **0.12**,
+essentially matching the unshielded-trained floor (0.09), with *positive* return: a genuine
+teacher. Push harder (1.0–1.5) and off-shield collision drops *below* the unshielded floor (0.04),
+but the policy turns timid (return collapses). So the crutch is fixable: **safe exploration and a
+policy safe *without* the shield are separable goals, and reward shape buys the second along a
+tunable frontier** — you choose how much deployment performance to trade for shield-free safety.
 
 ### The one remaining, box-dependent step
 
@@ -166,6 +180,7 @@ python3 scripts/rl_probe.py     # feasibility probe   -> results/rl_probe.{csv,p
 python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm     -> results/rl_scaled.{csv,png}
 python3 scripts/rl_transfer.py  # teacher-or-crutch 2×2 -> results/rl_transfer.{csv,png}
 python3 scripts/rl_teacher.py   # intervention-penalty fix -> results/rl_teacher.{csv,png}
+python3 scripts/rl_frontier.py  # penalty safety/perf frontier -> results/rl_frontier.{csv,png}
 python3 scripts/rl_video.py     # BEV preview video    -> results/rl_tier2_preview.mp4
 python3 -m pytest -q            # 111 tests, no GPU
 ```
