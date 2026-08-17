@@ -29,18 +29,26 @@ Current state, the open decision, and a runbook. The *why* behind the design liv
 > - **Env + tests:** `src/shield_in_alpasim/rl_env.py` (`ShieldNavEnv`, `shield=` flag, `layouts=` seam
 >   for real-scene fields, `intervention_penalty`); `tests/test_rl_env.py` (9 tests incl. the guarantee).
 >
-> **▶ ONLY REMAINING Tier 2 step — box-dependent (~$10–30 GPU):** eval the shield-trained policy in
-> AlpaSim closed-loop; and/or train on obstacle fields sampled from the 10 curated NuRec scenes via the
-> `ShieldNavEnv(layouts=...)` seam + the learned-camera field (Tier 1 seam). Turnkey script not yet
-> written — write it, then re-provision. See `docs/TIER2_PROBE.md` §"box-dependent step".
+ **✅ AlpaSim eval of the shield-trained policy — DONE (2026-08-17); box then TERMINATED.**
+> Built the deployment path (CPU, **116 tests**): `src/shield_in_alpasim/rl_policy.py` (net + checkpoint
+> save/load + `RLPolicy.bound(field)` adapting the net to the shield's `policy(state)->(accel,steer)`),
+> shared `build_observation` (env↔driver, one source of truth), driver `$SHIELD_RL_CKPT` drives the
+> rollout / `$SHIELD_FILTER=0` runs it unshielded, `results/checkpoints/{crutch,teacher}.pt`, box script
+> `scripts/box/rl_eval.sh`, `docs/TIER2_EVAL_KICKOFF.md`. **Honest finding: the toy policy transfers
+> MECHANICALLY but is NOT a competent photoreal driver** — 15 discrete actions (bang-bang
+> full-throttle/full-brake × ±0.52 steer) trained on 6 sparse obstacles → OOD in AlpaSim's ~150-obstacle
+> scenes: lurching speed, non-car-like steering, drifts off-route (NuRec smears) or stalls timid. 6/10
+> scenes pass on-route (low progress), 4 offroad; **shield on/off identical in-sim** (weak policy never
+> forces the shield's hand, so the surrogate's crutch doesn't surface). Records `results/alpasim_eval/`;
+> 5 clean on-route demo videos on the Mac `out_rl_hero/` (0245ff75, 048b974e, 05e74bef, 01d503d4, 065dcac9).
 >
-> **⚠ OPEN USER ACTIONS (I cannot do these):**
-> - **Terminate the idle A100** — it may STILL BE RUNNING (~$30–45/day). No Lambda key on the Mac, so
->   this is a Lambda-console/API action for you: console → Instances → Terminate, or the curl one-liner.
-> - **Re-merge branch → `main`** if you want `main` to include the post-PR Tier 2 commits.
-> - **Box (if re-provisioning):** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`;
->   connect `ssh ubuntu@<IP>` (key `~/.ssh/id_ed25519`; IP ephemeral — Lambda console). HF token NOT
->   stored here (public repo) — supply inline, never persist.
+> **▶ NEXT (optional, a bigger build — only if you want a competent in-sim driver):** continuous/finer
+> action space + smoother control + train on obstacle fields sampled from the real scenes via
+> `ShieldNavEnv(layouts=...)`. The surrogate Tier 2 results stand alone; this is "train a real AlpaSim
+> driver", a separate effort. **Box re-provision:** `HF_TOKEN=<inline,never persist> DATA_FS=$HOME/shield-data bash scripts/setup_box.sh` + `git pull`.
+>
+> **⚠ OPEN USER ACTION:** **Re-merge branch → `main`** if you want `main` to include the post-PR Tier 2
+> commits (branch is ahead of `main`). A100 is terminated; nothing else pending.
 >
 > ---
 >
