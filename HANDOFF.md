@@ -3,41 +3,53 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
-> ## ✅ Tier 0 + Tier 1 DONE (n=10) · ✅ Tier 2 probe = GO · ✅ Tier 2 scaled PPO DONE (2026-08-16)
-> Tier 0 + the n=10 Tier 1 degradation ladder are done/committed/pushed. **Tier 2 (safe RL via
-> shielding) is scoped, greenlit, and the scaled learning-curve figure is banked** — see
-> **[`docs/TIER2_PROBE.md`](docs/TIER2_PROBE.md)**. Key finding: **AlpaSim has NO RL interface** (gRPC
-> eval harness — no reward/reset/step; each step is a render + docker bring-up → training against it is
-> infeasible). The feasible path, now demonstrated: **train a low-dim policy in the kitti_nav numpy
-> surrogate *under the shield* (`safety_shield` as the per-step veto), then EVAL the learned policy in
-> AlpaSim.**
-> - **Probe** (`scripts/rl_probe.py`, numpy REINFORCE): shielded 7.4→17.7, **0 training collisions**, 30%
->   goal; unshielded **654 collisions**, collapsed to do-nothing. GO.
-> - **Scaled** (`scripts/rl_scaled.py`, torch **MLP+PPO, 5 seeds/arm × 400k steps**, `results/rl_scaled.{png,csv}`):
->   shielded converged return **11.2 vs 4.5**, **0 training collisions/seed vs ~385**, eval collision
->   **0.00 vs 0.11**. Shielding → safer, higher-return, lower-variance learning, with error bars.
->   **110 tests pass.**
-> - **A100 TERMINATED (2026-08-16):** all Tier 2 CPU work needs no GPU. User chose terminate (it's a
->   Lambda console/API action — no Lambda key on the Mac). Re-provision with `setup_box.sh` ONLY for the
->   one deferred box-dependent step ↓.
-> - **Only remaining Tier 2 step (needs a box, ~$10–30):** eval the shield-trained policy in AlpaSim
->   closed-loop, incl. training on obstacle fields sampled from the 10 curated NuRec scenes via the new
->   `ShieldNavEnv(layouts=...)` seam + the learned-camera obstacle field (Tier 1 seam). See
->   `docs/TIER2_PROBE.md` §"box-dependent step".
-> - **Connect (if re-provisioned):** `ssh ubuntu@<IP>` (key `~/.ssh/id_ed25519`; IP ephemeral — Lambda
->   console). `~/alpasim` + `~/kitti-nav` + `~/shield-in-alpasim` on `phase3-container-wiring`.
-> - **If the box got terminated:** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`.
-> - **HF token:** NOT stored here (public repo). Re-supply `HF_TOKEN` inline for scene downloads —
->   never write it to the repo/FS.
+> ## ✅ Tier 0 + Tier 1 (n=10) DONE · ✅ Tier 2 (safe RL via shielding) DONE — CPU-only · MERGED to `main` (2026-08-17)
+> Everything below is **committed + pushed** on `phase3-container-wiring` and **merged to `main`**
+> (PR #2 → `main` HEAD `caa4bcd`; later Tier 2 commits pushed to the branch, latest `dc99747` — the
+> branch is ahead of `main` again, re-merge when you want `main` current). **111 tests pass, all CPU, $0.**
 >
-> **▶ NEXT: PR to `main`, then decide on Tier 2.** Tier 0 + Tier 1 DONE **at n=10** (sections below):
-> **learned camera perception takes the shield's at-fault rate from ~0.02 (GT, essentially crash-free)
-> to ~0.23 — roughly an order of magnitude — at flat progress**, mechanism = camera
-> under-perceives/mislocates the *collision-relevant* obstacle in dense traffic (the shield tolerates
-> losing 60–86% of the field otherwise). Write-up: **[`docs/RESULTS.md`](docs/RESULTS.md)** + system
-> diagram + 3 figures. The result is shippable — **PR the branch to `main`**. The only big remaining
-> build is **Tier 2 shielded-RL** (COMPUTE_PLAN). Sweep scripts: `scripts/box/{screen,validate,diag,tier1}.sh`.
-> Bring-up (if terminated): `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`. Multicam:
+> **TIER 2 — safe RL via shielding, the full arc (all CPU, no GPU). Write-up: [`docs/TIER2_PROBE.md`](docs/TIER2_PROBE.md).**
+> Key finding: **AlpaSim has NO RL interface** (gRPC *eval* harness — no reward/reset/step; each step
+> is a render + docker bring-up → training against it is infeasible). Feasible path, demonstrated:
+> **train a low-dim policy in the kitti_nav numpy surrogate *under the shield* (`safety_shield` as the
+> per-step veto), then EVAL in AlpaSim.** The story, in order:
+> - **Probe = GO** (`scripts/rl_probe.py`, numpy REINFORCE): shielded 0 crashes; unshielded 654, collapsed.
+> - **Scaled** (`scripts/rl_scaled.py`, torch **MLP+PPO, 5 seeds × 400k**, `results/rl_scaled.{png,csv}`):
+>   shielded return **11.2 vs 4.5**, **0 vs ~385 training crashes/seed**, eval coll **0.00 vs 0.11**.
+> - **Teacher-or-crutch 2×2** (`scripts/rl_transfer.py`, `results/rl_transfer.{png,csv}`): it's a
+>   **CRUTCH** — deploy shield-OFF and the shield-trained policy collides **0.94** (vs unshielded-trained
+>   0.09); and shielding **learns faster** (return≥8 in ~59k steps vs never). Safety = the shield's, not
+>   the policy's → the shield must stay at deploy → *this is why Tier 1's perception question is the crux*.
+> - **Fix = the intervention-penalty frontier** (`EnvConfig.intervention_penalty`; `scripts/rl_teacher.py`
+>   single point, `scripts/rl_frontier.py` sweep, `results/rl_frontier.{png,csv}`): a tunable
+>   safety/performance knob — **penalty 0.6 → off-shield collision 0.12** (≈ unshielded floor 0.09),
+>   still trained crash-free; higher penalties → safer but timid.
+> - **Preview video:** `scripts/rl_video.py` → `results/rl_tier2_preview.mp4` (BEV, 3 panels: shield-ON
+>   clean / shield-OFF crash / teacher-OFF clean). README has a Tier 2 section now.
+> - **Env + tests:** `src/shield_in_alpasim/rl_env.py` (`ShieldNavEnv`, `shield=` flag, `layouts=` seam
+>   for real-scene fields, `intervention_penalty`); `tests/test_rl_env.py` (9 tests incl. the guarantee).
+>
+> **▶ ONLY REMAINING Tier 2 step — box-dependent (~$10–30 GPU):** eval the shield-trained policy in
+> AlpaSim closed-loop; and/or train on obstacle fields sampled from the 10 curated NuRec scenes via the
+> `ShieldNavEnv(layouts=...)` seam + the learned-camera field (Tier 1 seam). Turnkey script not yet
+> written — write it, then re-provision. See `docs/TIER2_PROBE.md` §"box-dependent step".
+>
+> **⚠ OPEN USER ACTIONS (I cannot do these):**
+> - **Terminate the idle A100** — it may STILL BE RUNNING (~$30–45/day). No Lambda key on the Mac, so
+>   this is a Lambda-console/API action for you: console → Instances → Terminate, or the curl one-liner.
+> - **Re-merge branch → `main`** if you want `main` to include the post-PR Tier 2 commits.
+> - **Box (if re-provisioning):** `HF_TOKEN=... DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`;
+>   connect `ssh ubuntu@<IP>` (key `~/.ssh/id_ed25519`; IP ephemeral — Lambda console). HF token NOT
+>   stored here (public repo) — supply inline, never persist.
+>
+> ---
+>
+> **Tier 0 + Tier 1 (the perception result), still current.** **Learned camera perception takes the
+> shield's at-fault rate from ~0.02 (GT, essentially crash-free) to ~0.23 — ~an order of magnitude — at
+> flat progress**, mechanism = camera under-perceives/mislocates the *collision-relevant* obstacle in
+> dense traffic (the shield tolerates losing 60–86% of the field otherwise). Write-up:
+> **[`docs/RESULTS.md`](docs/RESULTS.md)** + diagram + 3 figures. Box sweep scripts:
+> `scripts/box/{screen,validate,diag,tier1}.sh`. Multicam:
 > **[`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md)**.
 >
 > **Box note:** `shield-data` had VaVAM weights but NO scenes (the handoff's "scenes on shield-data"
