@@ -105,6 +105,52 @@ now with error bars.
 curriculum would raise completion. The comparison (safety + return, both with error bars) is the
 result, and it is decisive.
 
+## The sharper question — is the shield a teacher or a crutch?
+
+Shielded-RL's known catch (Alshiekh et al. 2018): a policy trained under a shield may just learn
+to *lean* on it. So we evaluated every trained policy in a 2×2 — trained shield-on/off × deployed
+shield-on/off (`scripts/rl_transfer.py`, 5 seeds):
+
+![transfer](../results/rl_transfer.png)
+
+| train \ deploy | shield ON | **shield OFF** |
+| --- | --- | --- |
+| **shielded** | coll 0.00, ret 10.5 | coll **0.94**, ret −6.0 |
+| **unshielded** | coll 0.00, ret 7.0 | coll **0.09**, ret 5.6 |
+
+**It's a crutch.** Remove the shield at deployment and the shield-trained policy collides **0.94** —
+*more* dangerous than a policy that trained without a shield and learned caution the hard way
+(0.09). The safety lived in the shield, not the policy. And the shield made learning **far faster**:
+shielded reached return ≥ 8 in **~59k steps (5/5 seeds)**; unshielded **never reached it (0/5)**.
+
+This is the unifying result. The shield is a runtime filter, so its guarantee is *its own*, not the
+policy's — which is exactly why **Tier 1's question (how good is the shield when perception is
+learned, not perfect?) is the crux of the whole system**: at deployment the shield must stay, and
+it is only as safe as what it perceives.
+
+## Fixing the crutch — penalise leaning on the shield
+
+If the policy pays nothing for proposing unsafe actions (the shield silently fixes them), it never
+learns to avoid them. So we add an **intervention penalty** (`EnvConfig.intervention_penalty`): a
+cost each step the shield overrides the policy. Exploration stays 100% safe (the shield still
+vetoes — 0 training crashes), but the policy is now rewarded for not *needing* it
+(`scripts/rl_teacher.py`, 5 seeds, penalty 0.4):
+
+![teacher](../results/rl_teacher.png)
+
+| deploy shield OFF | collision | return |
+| --- | --- | --- |
+| unshielded | 0.09 | 5.6 |
+| shielded (crutch) | 0.94 | −6.0 |
+| **teacher (pen 0.4)** | **0.49** | 1.5 |
+
+The penalty **roughly halves off-shield collisions (0.94 → 0.49)** and recovers off-shield return
+(−6.0 → +1.5) while keeping shield-on return high (~10.3) and training crash-free. **Honest read:**
+it is a *partial, high-variance* fix (per-seed 0.08–0.84) — some seeds become real teachers, others
+stay crutchy — not a clean solve. A stronger penalty (trades performance) or an
+intervention-*imitation* objective is the next lever. The direction is clear: safe exploration and a
+policy safe *without* the shield are separable goals, and you can push the second with reward shape.
+
 ### The one remaining, box-dependent step
 
 **Evaluate the shield-trained policy in AlpaSim** closed-loop (a few dozen renders, ~$10–30):
@@ -116,7 +162,10 @@ the eval — both need a GPU box (re-provision with `setup_box.sh`).
 
 Reproduce:
 ```bash
-python3 scripts/rl_probe.py     # feasibility probe -> results/rl_probe.{csv,png}
-python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm -> results/rl_scaled.{csv,png}
-python3 -m pytest -q            # 110 tests, no GPU
+python3 scripts/rl_probe.py     # feasibility probe   -> results/rl_probe.{csv,png}
+python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm     -> results/rl_scaled.{csv,png}
+python3 scripts/rl_transfer.py  # teacher-or-crutch 2×2 -> results/rl_transfer.{csv,png}
+python3 scripts/rl_teacher.py   # intervention-penalty fix -> results/rl_teacher.{csv,png}
+python3 scripts/rl_video.py     # BEV preview video    -> results/rl_tier2_preview.mp4
+python3 -m pytest -q            # 111 tests, no GPU
 ```
