@@ -71,6 +71,11 @@ class EnvConfig:
     offroad_penalty: float = 10.0
     goal_bonus: float = 20.0
     step_penalty: float = 0.02           # small per-step cost -> prefer finishing, not dawdling
+    # Penalty each step the shield had to override the policy's action (only bites when the shield
+    # is on). 0 = off (the policy pays nothing for leaning on the veto -> it learns to, becoming a
+    # crutch). > 0 teaches the policy to propose actions the shield need not veto, so safe behaviour
+    # is internalised and survives the shield being removed at deployment ("teacher", not "crutch").
+    intervention_penalty: float = 0.0
 
 
 @dataclass
@@ -177,6 +182,8 @@ class ShieldNavEnv:
         self._t += 1
 
         reward = c.progress_scale * (nxt.x - s.x) - c.step_penalty
+        if intervened:
+            reward -= c.intervention_penalty   # cost of leaning on the shield (teacher signal)
         done = False
         info = {"intervened": intervened, "ics": ics, "collision": False,
                 "offroad": False, "goal": False}

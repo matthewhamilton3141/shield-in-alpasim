@@ -91,6 +91,40 @@ def test_goal_reachable_with_clear_corridor():
     assert reached
 
 
+def test_intervention_penalty_only_bites_when_shield_overrides():
+    # With a penalty set, a step the shield had to override costs extra; the teacher signal must
+    # be exactly the intervention flag, and must never apply when the shield is off.
+    go_straight = ACTION_GRID.index((2.0, 0.0))
+    # Shield ON, penalty ON: drive full-throttle at obstacles until the shield intervenes; the
+    # step it intervenes must carry the penalty relative to the same step without a penalty.
+    cfg_pen = EnvConfig(intervention_penalty=1.0)
+    cfg_free = EnvConfig(intervention_penalty=0.0)
+    env_pen = ShieldNavEnv(cfg=cfg_pen, shield=True, seed=7)
+    env_free = ShieldNavEnv(cfg=cfg_free, shield=True, seed=7)
+    env_pen.reset(); env_free.reset()
+    saw_intervention = False
+    for _ in range(cfg_pen.horizon):
+        _, r_pen, d_pen, info = env_pen.step(go_straight)
+        _, r_free, d_free, _ = env_free.step(go_straight)
+        if info["intervened"]:
+            saw_intervention = True
+            assert abs((r_free - r_pen) - 1.0) < 1e-9   # penalty subtracted exactly once
+        else:
+            assert abs(r_free - r_pen) < 1e-9
+        if d_pen or d_free:
+            break
+    assert saw_intervention, "expected the shield to intervene on a full-throttle approach"
+
+    # Shield OFF: the penalty must never apply (nothing intervenes).
+    env_off = ShieldNavEnv(cfg=cfg_pen, shield=False, seed=7)
+    env_off.reset()
+    for _ in range(20):
+        _, _, done, info = env_off.step(go_straight)
+        assert info["intervened"] is False
+        if done:
+            break
+
+
 def test_observation_is_finite():
     env = ShieldNavEnv(seed=3)
     obs = env.reset()

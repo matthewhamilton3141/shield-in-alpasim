@@ -157,9 +157,9 @@ def ppo_update(ac, opt, buf, last_val, ent_coef, clip=0.2, epochs=4, minibatch=2
             opt.step()
 
 
-def train_seed(shield, seed, total_steps, rollout, ent0, lr):
+def train_seed(shield, seed, total_steps, rollout, ent0, lr, cfg=SCALED_ENV):
     torch.manual_seed(seed); np.random.seed(seed)
-    env = ShieldNavEnv(cfg=SCALED_ENV, shield=shield, seed=seed)
+    env = ShieldNavEnv(cfg=cfg, shield=shield, seed=seed)
     ac = ActorCritic(env.obs_dim, N_ACTIONS)
     opt = torch.optim.Adam(ac.parameters(), lr=lr)
     obs = env.reset()
