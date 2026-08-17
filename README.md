@@ -110,6 +110,33 @@ aggregate contrast (GT ~0.02 vs camera ~0.23) is robust. The GT baseline uses Al
 localization. Full trail: [`HANDOFF.md`](HANDOFF.md); multicam detail in
 [`docs/MULTICAM_HANDOFF.md`](docs/MULTICAM_HANDOFF.md).
 
+## Safe RL via shielding — teacher or crutch?
+
+The same shield, used a second way: not filtering a *fixed* policy, but *training* one under it, so
+it vetoes unsafe actions during exploration (provably no crash while learning). AlpaSim exposes no
+RL interface (it is a closed-loop *eval* harness — no reward/reset/step, and each step is a
+photoreal render), so training runs in the shield's own fast numpy kinematic model
+(`kitti_nav.vehicle`) and only *evaluates* in AlpaSim. PPO, 5 seeds/arm, full write-up in
+[`docs/TIER2_PROBE.md`](docs/TIER2_PROBE.md):
+
+- **Shielded exploration is safe *and* better.** 0 crashes across 2M training steps (vs ~385/seed
+  unshielded), higher return (11.2 vs 4.5), and it *learns faster* — reaching a return threshold in
+  ~59k steps where the unshielded arm never does.
+- **But it's a crutch, not a teacher.** Deploy the shield-trained policy *without* the shield and it
+  collides **0.94** — *more* dangerous than a policy that trained unshielded and learned caution the
+  hard way (0.09). The safety lived in the shield, not the policy.
+- **The crutch is fixable along a tunable frontier.** Penalising shield interventions during
+  training (still crash-free) trades deployment performance for shield-free safety; at the sweet
+  spot the policy deploys shield-off at collision **0.12**, essentially matching the unshielded
+  floor.
+
+![Intervention-penalty frontier](results/rl_frontier.png)
+
+This closes the loop with the perception result above: because the guarantee is the *shield's*, not
+the policy's, the shield must stay at deployment — which is exactly why "how good is the shield when
+its perception is learned, not perfect?" is the crux of the whole system. (A short BEV preview of
+the crutch and its fix: `results/rl_tier2_preview.mp4`.)
+
 ## The gap, and how it was closed
 
 AlpaSim's driver interface (`alpasim_driver.models.base.BaseTrajectoryModel`) is **vision-first**:
@@ -127,8 +154,9 @@ So this was never a drop-in adapter. Two real problems, both now solved:
    `.usdz` artifact (`alpasim_utils.scene_data_source`). `obstacles.py`/`scene.py` sample the
    scene's actors at the current ego pose into a kitti-nav `CircleField`. This is the privileged,
    "ground-truth geometry" arm: the scene id is withheld from real benchmark runs by design, so
-   it is a baseline, not a leaderboard score — the sharper experiment (not yet built) swaps in
-   learned perception and measures how much the certificate degrades.
+   it is a baseline, not a leaderboard score — and the sharper experiment (swapping in learned
+   perception and measuring how much the certificate degrades) is exactly the *Perception
+   degradation* result above.
 2. **The shield outputs a per-step command; AlpaSim wants a trajectory — and there's a policy to
    filter.** `control.py` is a pure-pursuit + speed-profile tracker that turns the inner policy's
    waypoints into the per-step commands the shield certifies; the shield then rolls them forward
@@ -160,7 +188,7 @@ The shield itself is not implemented here — it is imported from kitti-nav (see
 No AlpaSim, no GPU, no scene assets — the tracker + shield core is pure numpy:
 
 ```bash
-python3 -m pytest -q                    # 53 tests
+python3 -m pytest -q                    # 111 tests
 python3 scripts/preview_trajectory.py   # -> docs/preview.png
 ```
 
