@@ -68,6 +68,16 @@ services:
       # Set SHIELD_SCENE_USDZ_IN_CONTAINER on the host to the *container-side* path, e.g.
       # /mnt/nre-data/all-usdzs/<scene>.usdz (the host path won't exist in the container).
       - "SHIELD_SCENE_USDZ=${oc.env:SHIELD_SCENE_USDZ_IN_CONTAINER,''}"
+      # --- Tier 2 RL-policy eval (docs/TIER2_EVAL_KICKOFF.md) ---
+      # Path INSIDE the container to a trained policy checkpoint (rl_policy.save_policy). The repo
+      # is mounted at /mnt/shield, so a committed checkpoint is e.g.
+      # /mnt/shield/results/checkpoints/crutch.pt. Unset -> coast baseline (unchanged).
+      - "SHIELD_RL_CKPT=${oc.env:SHIELD_RL_CKPT_IN_CONTAINER,''}"
+      # Shield veto on (1, default) or off (0) — the crutch/teacher deployment arms. Off runs the
+      # RL policy raw, to measure whether safety survives the shield's removal in AlpaSim.
+      - "SHIELD_FILTER=${oc.env:SHIELD_FILTER,1}"
+      # Obstacle field the shield checks: gt (default) or camera (learned perception, Tier 1 seam).
+      - "SHIELD_OBSTACLE_SOURCE=${oc.env:SHIELD_OBSTACLE_SOURCE,gt}"
 
     # Space-joined and run under `bash -c` (wizard services.py `_build_command` +
     # deployment/docker_compose.py), so the `&&` chains the install ahead of the driver.
