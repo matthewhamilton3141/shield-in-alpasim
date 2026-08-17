@@ -47,46 +47,8 @@ SCALED_ENV = EnvConfig(
     obstacle_x_range=(10.0, 38.0), horizon=200, n_nearest=6,
 )
 
-# Fixed per-feature obs scales (speeds, metres, radii -> ~unit) before the net.
-_OBS_SCALE_EGO = np.array([15.0, 0.52, 40.0], np.float32)
-
-
-def obs_scale(obs_dim: int) -> torch.Tensor:
-    n_disc = (obs_dim - 3) // 3
-    disc = np.tile([40.0, 4.5, 1.0], n_disc).astype(np.float32)
-    return torch.tensor(np.concatenate([_OBS_SCALE_EGO, disc]))
-
-
-class ActorCritic(nn.Module):
-    """Small shared-trunk MLP: policy logits over the 15 discrete actions + a state value."""
-
-    def __init__(self, obs_dim: int, n_actions: int, hidden: int = 128):
-        super().__init__()
-        self.register_buffer("scale", obs_scale(obs_dim))
-        self.trunk = nn.Sequential(
-            nn.Linear(obs_dim, hidden), nn.Tanh(),
-            nn.Linear(hidden, hidden), nn.Tanh(),
-        )
-        self.pi = nn.Linear(hidden, n_actions)
-        self.v = nn.Linear(hidden, 1)
-        # Orthogonal init with a small policy-head gain — standard PPO init, keeps the initial
-        # policy near-uniform and the value head well-scaled.
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, np.sqrt(2))
-                nn.init.zeros_(m.bias)
-        nn.init.orthogonal_(self.pi.weight, 0.01)
-
-    def forward(self, obs):
-        h = self.trunk(obs / self.scale)
-        return self.pi(h), self.v(h).squeeze(-1)
-
-    @torch.no_grad()
-    def act(self, obs_np):
-        logits, value = self(torch.as_tensor(obs_np, dtype=torch.float32))
-        dist = torch.distributions.Categorical(logits=logits)
-        a = dist.sample()
-        return int(a), float(dist.log_prob(a)), float(value)
+# The net + obs live in the package so training and the AlpaSim driver share ONE definition.
+from shield_in_alpasim.rl_policy import ActorCritic  # noqa: E402
 
 
 def collect(env, ac, n_steps, obs, ep_state):
