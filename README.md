@@ -16,6 +16,15 @@ geometry, and only alters it when it must. Both problems the earlier scaffold fl
 (below) are solved. See the numbers below and the full trail in
 [`HANDOFF.md`](HANDOFF.md).
 
+![shielded VaVAM driving four NuRec scenes in AlpaSim](docs/shielded_grid.gif)
+
+*Shielded VaVAM across four NuRec scenes in AlpaSim's photorealistic closed-loop environment; the
+`LEFT`/`STRAIGHT`/`RIGHT` overlay is the coarse nav command the driver receives. These are
+ground-truth-path renders: NuRec (the neural scene reconstruction) is only faithful near the logged
+trajectory, so when the ego drifts off it the render tears and smears — following the GT path keeps
+the visual clean. So this is a look at the environment the shield runs in, not a results figure; the
+quantitative results are below.*
+
 ## The result
 
 8 scenes × 3 rollouts, VaVAM ± shield (all fixes on), on the NuRec sample set:
