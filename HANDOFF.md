@@ -3,6 +3,35 @@
 Current state, the open decision, and a runbook. The *why* behind the design lives in
 [`README.md`](README.md) ("The actual gap"); this file is where to pick up.
 
+> ## ✅ AlpaSim VIDEO SET rendered + turn-mining pipeline (2026-08-18) — box TERMINATED
+> A long video-rendering session on a **re-provisioned A100** (fresh instance; now **terminated**).
+> Produced a big set of photoreal AlpaSim clips, all pulled to the **Mac at `out_rl_hero/`** (gitignored /
+> local-only — NOT in the repo). Latest branch commit `b85895c` (`phase3-container-wiring`, pushed).
+> - **The clean-render technique:** the RL toy policy stalls/drifts off-route and NuRec smears off the
+>   logged path. Fix = **GT-path render**: `runtime.simulation_config.force_gt_duration_us=30000000`
+>   makes the ego *follow the original logged drive* the whole scene → clean render, no tearing. Use
+>   `driver=shielded_vavam` (has `use_waypoint_commands: true`) so the **Command** overlay shows correct
+>   LEFT/STRAIGHT/RIGHT at turns. (Pure GT-path = ego on replay, VaVAM/shield inert — a beauty shot.)
+> - **Config fix (`a3ce36e`):** `default_command` was `2` (=RIGHT) but labelled "straight" in all 4
+>   driver configs; AlpaSim `DriveCommand` is **LEFT=0, STRAIGHT=1, RIGHT=2, UNKNOWN=3**. Set to `1`.
+> - **Turn-mining pipeline (`scripts/find_turning_scenes.py`, `b85895c`):** the full NuRec dataset has
+>   **1,607 scenes** (vs the 20 curated), each with a cheap `camera_front_wide_120fov.mp4` reference
+>   video. Rank scenes by a **turn-score** = peak sustained horizontal camera pan (FFT phase corr) +
+>   **coherence** ratio (rejects camera-shake false positives). Render the top turners GT-path. Found
+>   real turning drives (a8e78edb, 2387cbf7, 3826e7f4, c88ff67f, 58b5c3ad, 4cb05d65 …). Clips ~20 s each
+>   (= length of each logged drive; can't extend, could montage).
+> - **Videos in `out_rl_hero/`:** `turn_*.mp4` (6 turning drives), `gtpath_*.mp4` (11 clean scenes),
+>   `vavam_02eadd92_SHIELDED.mp4` (shield actively filtering VaVAM), plus Tier 0/1 hero in
+>   `out_tier0_result/hero/`. A montage was offered (local, no box) but not built.
+> - **Honest finding banked earlier this arc:** the surrogate-trained RL policy transfers *mechanically*
+>   to AlpaSim but is NOT a competent photoreal driver (15-action bang-bang, OOD → stalls). VaVAM is the
+>   competent driver; the shield filters it. See the Tier-2 banner below + `docs/TIER2_PROBE.md`.
+> - **▶ NEXT if resumed:** re-provision (`HF_TOKEN=<inline> DATA_FS=$HOME/shield-data bash scripts/setup_box.sh`,
+>   then `git pull`; **note:** the `shield-data` persistent FS kept VaVAM weights but the scene-cache
+>   symlink didn't take, so scenes re-download to local disk). To render more dynamic clips:
+>   `HF_TOKEN=... python3 scripts/find_turning_scenes.py --n 60` → render top turners with the GT-path
+>   recipe above. **Re-merge branch → `main`** when you want `main` current (it's ahead).
+>
 > ## ✅ Tier 0 + Tier 1 (n=10) DONE · ✅ Tier 2 (safe RL via shielding) DONE — CPU-only · MERGED to `main` (2026-08-17)
 > Everything below is **committed + pushed** on `phase3-container-wiring` and **merged to `main`**
 > (PR #2 → `main` HEAD `caa4bcd`; later Tier 2 commits pushed to the branch, latest `dc99747` — the
