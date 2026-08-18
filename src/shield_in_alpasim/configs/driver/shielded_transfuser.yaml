@@ -51,7 +51,7 @@ inference:
 route:
   # Transfuser consumes the route/command; the shield passes prediction_input through
   # untouched, so mirror Transfuser's own route settings.
-  default_command: 2              # 0=right, 1=left, 2=straight
+  default_command: 1              # STRAIGHT — AlpaSim DriveCommand: LEFT=0, STRAIGHT=1, RIGHT=2
   use_waypoint_commands: true
   command_distance_threshold: 3.0
   min_lookahead_distance: 20.0

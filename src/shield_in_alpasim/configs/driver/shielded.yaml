@@ -36,7 +36,7 @@ inference:
 
 # Route configuration (the shield filters commands, it does not follow a route yet)
 route:
-  default_command: 2  # straight
+  default_command: 1  # STRAIGHT — AlpaSim DriveCommand: LEFT=0, STRAIGHT=1, RIGHT=2 (was 2=RIGHT, a mislabel)
   use_waypoint_commands: false
 
 # Output configuration

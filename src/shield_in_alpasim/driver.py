@@ -96,6 +96,18 @@ OOD_GUARD_ENV_VAR = "SHIELD_OOD_GUARD"
 # experiment; one front camera, or the full surround rig when several are advertised).
 OBSTACLE_SOURCE_ENV_VAR = "SHIELD_OBSTACLE_SOURCE"
 
+# Path to a Tier 2 RL policy checkpoint (`rl_policy.save_policy`). When set, the driver's rollout is
+# driven by that trained low-dim policy over the obstacle field instead of the coast baseline — this
+# is how a policy trained under the shield in the kitti_nav surrogate is *evaluated* in AlpaSim (the
+# net proposes (accel,steer) from the same obstacle field the shield checks; the shield still filters
+# it). See docs/TIER2_EVAL_KICKOFF.md and `shield_in_alpasim.rl_policy`.
+RL_CKPT_ENV_VAR = "SHIELD_RL_CKPT"
+
+# The shield's veto is on by default. `SHIELD_FILTER=0` runs the policy UNSHIELDED (still building
+# the field, still logging, but not certifying) — the "shield removed at deployment" arm of the
+# Tier 2 crutch/teacher eval. A no-op unless a policy actually drives (RL ckpt or inner model).
+SHIELD_FILTER_ENV_VAR = "SHIELD_FILTER"
+
 # Which of the advertised (perception) cameras the *inner policy* consumes, comma-separated. We
 # advertise ALL perception cameras so AlpaSim renders the sides/rear for the shield, but the inner
 # policy (e.g. VaVAM) validates against exactly its own set, so it must be handed only these. Unset
@@ -239,11 +251,13 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         scene_source: SceneObstacleSource | None = None,
         obstacle_source=None,
         inner_model=None,
+        rl_policy=None,
         policy_camera_ids: list[str] | None = None,
         rear_filter: bool | None = None,
         passthrough: bool | None = None,
         ood_guard: bool | None = None,
         side_corridor: float | None = None,
+        shield_enabled: bool | None = None,
     ):
         self._cfg = cfg
         # Ignore un-hittable behind-the-ego obstacles (see `forward_relevant_field`). On by
@@ -301,6 +315,16 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # The policy being shielded, or None for the coasting baseline. Any object with a
         # `predict(prediction_input) -> ModelPrediction` — i.e. another `BaseTrajectoryModel`.
         self._inner_model = inner_model
+        # A Tier 2 RL policy (`rl_policy.RLPolicy`) driving the rollout directly from the obstacle
+        # field, or None. Mutually exclusive with a waypoint `inner_model`; when set it replaces the
+        # coast baseline as the rollout's proposing policy (the shield still filters it).
+        self._rl_policy = rl_policy
+        # The shield's veto. On by default; `SHIELD_FILTER=0` runs the policy unshielded (the
+        # crutch/teacher deployment arm). Explicit constructor arg wins (tests).
+        self._shield_enabled = (
+            os.environ.get(SHIELD_FILTER_ENV_VAR, "1") != "0" if shield_enabled is None
+            else shield_enabled
+        )
         # Optional per-cycle BEV debug dump (perceived vs true discs); off unless the env is set.
         self._debug_dir = os.environ.get(DEBUG_DIR_ENV_VAR) or None
         # Optional: also dump these cameras' raw frames per cycle (for a real-scene video synced
@@ -334,6 +358,7 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             model_cfg, device, policy_camera_ids, context_length, output_frequency_hz
         )
         obstacle_source = cls._build_obstacle_source(device, camera_ids)
+        rl_policy = cls._build_rl_policy(device)
 
         return cls(
             cfg=cfg,
@@ -344,7 +369,23 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
             scene_source=scene_source,
             obstacle_source=obstacle_source,
             inner_model=inner_model,
+            rl_policy=rl_policy,
         )
+
+    @staticmethod
+    def _build_rl_policy(device):
+        """Load the Tier 2 RL policy from `$SHIELD_RL_CKPT`, or None. torch import is deferred to
+        here so the ground-truth/coast path and the Mac tests never require torch."""
+        ckpt = os.environ.get(RL_CKPT_ENV_VAR)
+        if not ckpt:
+            return None
+        from shield_in_alpasim.rl_policy import load_policy
+
+        policy = load_policy(ckpt, device=str(device))
+        logger.info("Tier 2 RL policy loaded from %s (obs_dim %d) — driving the rollout%s",
+                    ckpt, policy.cfg and (3 + 3 * policy.cfg.n_nearest),
+                    "" if os.environ.get(SHIELD_FILTER_ENV_VAR, "1") != "0" else " (shield DISABLED)")
+        return policy
 
     @staticmethod
     def _resolve_policy_cameras(camera_ids) -> list[str]:
@@ -599,7 +640,8 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
         # ahead" (shield doing its job) from "braking for a rear/side actor" (over-conservative).
         diag = rollout_diagnostics(obstacles, state, self._cfg, policy)
 
-        states, stats = shielded_rollout(policy, state, obstacles, self._cfg, n_steps=n_steps)
+        states, stats = shielded_rollout(policy, state, obstacles, self._cfg, n_steps=n_steps,
+                                         shield=self._shield_enabled)
 
         # The intervention count is the experiment's signal: how often the shield overrode the
         # inner policy. One line per cycle (runs are short) so a run's driver log is a full
@@ -668,9 +710,16 @@ class ShieldedDriver(BaseTrajectoryModel if _HAS_ALPASIM else object):
                     sorted(prediction_input.camera_images), self._policy_camera_ids)
         obstacles = self._obstacles_for(prediction_input)
 
-        # Coasting baseline (no inner policy): shield-filter a go-straight command.
+        # No waypoint inner model: either a Tier 2 RL policy drives the rollout from the obstacle
+        # field, or (no RL policy either) the coast baseline. Either way the shield filters it.
         if self._inner_model is None:
-            xy = self._rollout(prediction_input.speed, obstacles, None)
+            policy = None
+            if self._rl_policy is not None:
+                # Bind the net to THIS cycle's field: the shield rollout starts at the rig origin
+                # and the field is already rig-frame, so it is the "world" the obs is built against.
+                circles = np.asarray(getattr(obstacles, "circles", np.zeros((0, 3))), float)
+                policy = self._rl_policy.bound(circles)
+            xy = self._rollout(prediction_input.speed, obstacles, policy)
             return ModelPrediction.from_planar(xy, self._compute_headings_from_trajectory(xy))
 
         # Decorator path: track the inner plan, run it through the shield. The inner policy sees

@@ -1,0 +1,7 @@
+scene,arm,test_shield,at_fault,at_fault_std,offroad,progress,progress_std,status0
+clipgt-05ecbbf5-d88c-41b7-97f2-f4ac2615a8c9,crutch,1,0.0,0.0,1.0,0.038,0.0,fail
+clipgt-05ecbbf5-d88c-41b7-97f2-f4ac2615a8c9,crutch,0,0.0,0.0,1.0,0.038,0.0,fail
+clipgt-05ecbbf5-d88c-41b7-97f2-f4ac2615a8c9,teacher,1,0.0,0.0,1.0,0.044,0.0,fail
+clipgt-05ecbbf5-d88c-41b7-97f2-f4ac2615a8c9,teacher,0,0.0,0.0,1.0,0.044,0.0,fail
+clipgt-065dcac9-ee67-4434-a835-c6b816c88e48,crutch,1,0.0,0.0,0.0,0.161,0.0,pass
+clipgt-065dcac9-ee67-4434-a835-c6b816c88e48,crutch,0,0.0,0.0,0.0,0.161,0.0,pass

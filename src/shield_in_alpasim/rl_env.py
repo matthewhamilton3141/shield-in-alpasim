@@ -71,6 +71,49 @@ class EnvConfig:
     offroad_penalty: float = 10.0
     goal_bonus: float = 20.0
     step_penalty: float = 0.02           # small per-step cost -> prefer finishing, not dawdling
+    # Penalty each step the shield had to override the policy's action (only bites when the shield
+    # is on). 0 = off (the policy pays nothing for leaning on the veto -> it learns to, becoming a
+    # crutch). > 0 teaches the policy to propose actions the shield need not veto, so safe behaviour
+    # is internalised and survives the shield being removed at deployment ("teacher", not "crutch").
+    intervention_penalty: float = 0.0
+
+
+# Sentinel for an empty nearest-obstacle slot: far ahead, dead centre, zero radius -> reads "clear".
+_FAR_SLOT = (100.0, 0.0, 0.0)
+
+
+def observation_dim(cfg: EnvConfig) -> int:
+    """Obs layout: ego (v, steer, dist-to-goal) + n_nearest × (dx, dy, r)."""
+    return 3 + 3 * cfg.n_nearest
+
+
+def build_observation(state: VehicleState, world_circles: np.ndarray, cfg: EnvConfig) -> np.ndarray:
+    """The policy's observation from an ego `state` and obstacle discs in the *world* frame.
+
+    THE single source of truth for the observation — shared by `ShieldNavEnv` (training) and the
+    AlpaSim driver (deployment), because the shield-trained policy only transfers if the obs it is
+    fed at deployment is byte-for-byte the one it trained on (same rig-frame convention, same
+    nearest-k ordering, same far-slot padding, same features). Do not fork this.
+
+    `world_circles` is `(N, 3)` `(x, y, r)`. In the env that is the fixed corridor layout; in the
+    driver it is the per-cycle `CircleField` (already rig-frame at cycle start, treated as the
+    world for the shield's short lookahead — see the driver). Obstacles are expressed in the ego's
+    rig frame (origin at the rear axle, heading +x), the nearest `k` by surface gap are kept, and
+    absent slots are padded with a far sentinel.
+    """
+    circles = np.asarray(world_circles, float).reshape(-1, 3)
+    k = cfg.n_nearest
+    feat = np.tile(np.array(_FAR_SLOT, float), (k, 1))
+    if len(circles):
+        dx = circles[:, 0] - state.x
+        dy = circles[:, 1] - state.y
+        c, sn = np.cos(-state.yaw), np.sin(-state.yaw)
+        rig = np.column_stack([c * dx - sn * dy, sn * dx + c * dy, circles[:, 2]])
+        gap = np.linalg.norm(rig[:, :2], axis=1) - rig[:, 2]
+        order = np.argsort(gap)[:k]
+        feat[: len(order)] = rig[order]
+    ego = np.array([state.v, state.steer, cfg.goal_x - state.x], float)
+    return np.concatenate([ego, feat.reshape(-1)])
 
 
 @dataclass
@@ -103,38 +146,11 @@ class ShieldNavEnv:
     # --- observation --------------------------------------------------------------------
     @property
     def obs_dim(self) -> int:
-        # ego (v, steer, dist-to-goal) + n_nearest × (dx, dy, r)
-        return 3 + 3 * self.cfg.n_nearest
-
-    def _obstacle_discs_rig(self) -> np.ndarray:
-        """The obstacle discs in the ego's rig frame (origin at rear axle, heading +x)."""
-        circles = np.asarray(self._obstacles.circles, float).reshape(-1, 3)
-        if len(circles) == 0:
-            return np.zeros((0, 3))
-        s = self._state
-        dx = circles[:, 0] - s.x
-        dy = circles[:, 1] - s.y
-        c, sn = np.cos(-s.yaw), np.sin(-s.yaw)
-        rx = c * dx - sn * dy
-        ry = sn * dx + c * dy
-        return np.column_stack([rx, ry, circles[:, 2]])
+        return observation_dim(self.cfg)
 
     def _observe(self) -> np.ndarray:
-        s = self._state
-        rig = self._obstacle_discs_rig()
-        k = self.cfg.n_nearest
-        feat = np.zeros((k, 3), float)
-        if len(rig):
-            # nearest-k by surface gap; pad with a far sentinel so absent slots read "clear".
-            gap = np.linalg.norm(rig[:, :2], axis=1) - rig[:, 2]
-            order = np.argsort(gap)[:k]
-            feat[: len(order)] = rig[order]
-            for j in range(len(order), k):
-                feat[j] = (100.0, 0.0, 0.0)
-        else:
-            feat[:] = (100.0, 0.0, 0.0)
-        ego = np.array([s.v, s.steer, self.cfg.goal_x - s.x], float)
-        return np.concatenate([ego, feat.reshape(-1)])
+        return build_observation(
+            self._state, np.asarray(self._obstacles.circles, float).reshape(-1, 3), self.cfg)
 
     # --- episode lifecycle --------------------------------------------------------------
     def reset(self) -> np.ndarray:
@@ -177,6 +193,8 @@ class ShieldNavEnv:
         self._t += 1
 
         reward = c.progress_scale * (nxt.x - s.x) - c.step_penalty
+        if intervened:
+            reward -= c.intervention_penalty   # cost of leaning on the shield (teacher signal)
         done = False
         info = {"intervened": intervened, "ics": ics, "collision": False,
                 "offroad": False, "goal": False}

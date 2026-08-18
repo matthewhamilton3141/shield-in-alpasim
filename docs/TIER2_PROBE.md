@@ -105,6 +105,66 @@ now with error bars.
 curriculum would raise completion. The comparison (safety + return, both with error bars) is the
 result, and it is decisive.
 
+## The sharper question — is the shield a teacher or a crutch?
+
+Shielded-RL's known catch (Alshiekh et al. 2018): a policy trained under a shield may just learn
+to *lean* on it. So we evaluated every trained policy in a 2×2 — trained shield-on/off × deployed
+shield-on/off (`scripts/rl_transfer.py`, 5 seeds):
+
+![transfer](../results/rl_transfer.png)
+
+| train \ deploy | shield ON | **shield OFF** |
+| --- | --- | --- |
+| **shielded** | coll 0.00, ret 10.5 | coll **0.94**, ret −6.0 |
+| **unshielded** | coll 0.00, ret 7.0 | coll **0.09**, ret 5.6 |
+
+**It's a crutch.** Remove the shield at deployment and the shield-trained policy collides **0.94** —
+*more* dangerous than a policy that trained without a shield and learned caution the hard way
+(0.09). The safety lived in the shield, not the policy. And the shield made learning **far faster**:
+shielded reached return ≥ 8 in **~59k steps (5/5 seeds)**; unshielded **never reached it (0/5)**.
+
+This is the unifying result. The shield is a runtime filter, so its guarantee is *its own*, not the
+policy's — which is exactly why **Tier 1's question (how good is the shield when perception is
+learned, not perfect?) is the crux of the whole system**: at deployment the shield must stay, and
+it is only as safe as what it perceives.
+
+## Fixing the crutch — penalise leaning on the shield
+
+If the policy pays nothing for proposing unsafe actions (the shield silently fixes them), it never
+learns to avoid them. So we add an **intervention penalty** (`EnvConfig.intervention_penalty`): a
+cost each step the shield overrides the policy. Exploration stays 100% safe (the shield still
+vetoes — 0 training crashes), but the policy is now rewarded for not *needing* it
+(`scripts/rl_teacher.py`, 5 seeds, penalty 0.4):
+
+![teacher](../results/rl_teacher.png)
+
+| deploy shield OFF | collision | return |
+| --- | --- | --- |
+| unshielded | 0.09 | 5.6 |
+| shielded (crutch) | 0.94 | −6.0 |
+| **teacher (pen 0.4)** | **0.49** | 1.5 |
+
+A single penalty (0.4) only *partially* fixed it (off-shield collision 0.94 → 0.49, high variance),
+so we swept the penalty to map the whole trade-off (`scripts/rl_frontier.py`, 5 seeds):
+
+![frontier](../results/rl_frontier.png)
+
+| penalty | off-shield collision | off-shield return | on-shield return |
+| --- | --- | --- | --- |
+| 0.0 (crutch) | 1.00 | −7.7 | 9.4 |
+| 0.3 | 0.69 | −2.8 | 8.7 |
+| **0.6** | **0.12** | **+4.1** | 6.1 |
+| 1.0 | 0.06 | 2.6 | 3.4 |
+| 1.5 | 0.04 | 0.9 | 1.8 |
+
+**The penalty is a clean, monotone knob** on a safety–performance frontier. At **penalty 0.6** the
+policy — still trained **100% crash-free** — deploys *without* the shield at collision **0.12**,
+essentially matching the unshielded-trained floor (0.09), with *positive* return: a genuine
+teacher. Push harder (1.0–1.5) and off-shield collision drops *below* the unshielded floor (0.04),
+but the policy turns timid (return collapses). So the crutch is fixable: **safe exploration and a
+policy safe *without* the shield are separable goals, and reward shape buys the second along a
+tunable frontier** — you choose how much deployment performance to trade for shield-free safety.
+
 ### The one remaining, box-dependent step
 
 **Evaluate the shield-trained policy in AlpaSim** closed-loop (a few dozen renders, ~$10–30):
@@ -116,7 +176,11 @@ the eval — both need a GPU box (re-provision with `setup_box.sh`).
 
 Reproduce:
 ```bash
-python3 scripts/rl_probe.py     # feasibility probe -> results/rl_probe.{csv,png}
-python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm -> results/rl_scaled.{csv,png}
-python3 -m pytest -q            # 110 tests, no GPU
+python3 scripts/rl_probe.py     # feasibility probe   -> results/rl_probe.{csv,png}
+python3 scripts/rl_scaled.py    # PPO, 5 seeds/arm     -> results/rl_scaled.{csv,png}
+python3 scripts/rl_transfer.py  # teacher-or-crutch 2×2 -> results/rl_transfer.{csv,png}
+python3 scripts/rl_teacher.py   # intervention-penalty fix -> results/rl_teacher.{csv,png}
+python3 scripts/rl_frontier.py  # penalty safety/perf frontier -> results/rl_frontier.{csv,png}
+python3 scripts/rl_video.py     # BEV preview video    -> results/rl_tier2_preview.mp4
+python3 -m pytest -q            # 111 tests, no GPU
 ```
